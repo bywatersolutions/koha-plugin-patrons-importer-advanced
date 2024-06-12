@@ -64,29 +64,7 @@ sub configure {
 
         ## Grab the values we already have for our settings, if any exist
         $template->param(
-            debug      => $self->retrieve_data('debug'),
-            run_on_dow => $self->retrieve_data('run_on_dow'),
-            host       => $self->retrieve_data('host'),
-            username   => $self->retrieve_data('username'),
-            password   => $self->retrieve_data('password')
-            ? Koha::Encryption->new->decrypt_hex(
-                $self->retrieve_data('password')
-              )
-            : q{},
-            dir                   => $self->retrieve_data('dir'),
-            filename              => $self->retrieve_data('filename'),
-            confirm               => $self->retrieve_data('confirm'),
-            matchpoint            => $self->retrieve_data('matchpoint'),
-            default               => $self->retrieve_data('default'),
-            overwrite             => $self->retrieve_data('overwrite'),
-            preserve_field        => $self->retrieve_data('preserve_field'),
-            update_expiration     => $self->retrieve_data('update_expiration'),
-            verbose               => $self->retrieve_data('verbose'),
-            extra_options         => $self->retrieve_data('extra_options'),
-            expiration_from_today =>
-              $self->retrieve_data('expiration_from_today'),
-            preserve_extended_attributes =>
-              $self->retrieve_data('preserve_extended_attributes'),
+            configuration      => $self->retrieve_data('configuration'),
         );
 
         if ( $cgi->param('test') ) {
@@ -105,25 +83,7 @@ sub configure {
     else {
         $self->store_data(
             {
-                debug      => $cgi->param('debug'),
-                run_on_dow => $cgi->param('run_on_dow'),
-                host       => $cgi->param('host'),
-                username   => $cgi->param('username'),
-                password   =>
-                  Koha::Encryption->new->encrypt_hex( $cgi->param('password') ),
-                dir                   => $cgi->param('dir'),
-                filename              => $cgi->param('filename'),
-                confirm               => $cgi->param('confirm'),
-                matchpoint            => $cgi->param('matchpoint'),
-                default               => $cgi->param('default'),
-                overwrite             => $cgi->param('overwrite'),
-                preserve_field        => $cgi->param('preserve_field'),
-                update_expiration     => $cgi->param('update_expiration'),
-                verbose               => $cgi->param('verbose'),
-                extra_options         => $cgi->param('extra_options'),
-                expiration_from_today => $cgi->param('expiration_from_today'),
-                preserve_extended_attributes =>
-                  $cgi->param('preserve_extended_attributes'),
+                configuration      => $cgi->param('configuration'),
             }
         );
         $self->go_home();
