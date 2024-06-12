@@ -1,4 +1,4 @@
-package Koha::Plugin::Com::ByWaterSolutions::PatronsImporter;
+package Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced;
 
 ## It's good practice to use Modern::Perl
 use Modern::Perl;
