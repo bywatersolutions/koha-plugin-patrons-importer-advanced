@@ -64,8 +64,7 @@ sub configure {
 
         ## Grab the values we already have for our settings, if any exist
         $template->param(
-            configuration      => $self->retrieve_data('configuration'),
-        );
+            configuration => $self->retrieve_data('configuration'), );
 
         if ( $cgi->param('test') ) {
             try {
@@ -83,7 +82,7 @@ sub configure {
     else {
         $self->store_data(
             {
-                configuration      => $cgi->param('configuration'),
+                configuration => $cgi->param('configuration'),
             }
         );
         $self->go_home();
@@ -91,12 +90,11 @@ sub configure {
 }
 
 sub get_sftp {
-    my ($self)        = @_;
-    my $sftp_host     = $self->retrieve_data('host');
-    my $sftp_username = $self->retrieve_data('username');
-    my $sftp_password =
-      Koha::Encryption->new->decrypt_hex( $self->retrieve_data('password') );
-    my $sftp_dir = $self->retrieve_data('dir');
+    my ( $self, $job ) = @_;
+    my $sftp_host     = $job->{sftp}->{host};
+    my $sftp_username = $job->{sftp}->{username};
+    my $sftp_password = $job->{sftp}->{password};
+    my $sftp_dir      = $job->{sftp}->{directory};
 
     my $sftp = Net::SFTP::Foreign->new(
         host     => $sftp_host,
@@ -104,12 +102,15 @@ sub get_sftp {
         port     => 22,
         password => $sftp_password
     );
-    $sftp->die_on_error(
-        "Patrons Importer - SFTP ERROR: Unable to establish SFTP connection");
+    $sftp->die_on_error( "Patrons Importer - "
+          . "SFTP ERROR: Unable to establish SFTP connection for "
+          . Data::Dumper::Dumper( $job->{sftp} ) );
 
     $sftp->setcwd($sftp_dir)
       or die "Patrons Importer - SFTP ERROR: unable to change cwd: "
-      . $sftp->error;
+      . $sftp->error
+      . " - for "
+      . Data::Dumper::Dumper( $job->{sftp} );
 
     return $sftp;
 }
@@ -121,67 +122,85 @@ sub get_sftp {
 sub cronjob_nightly {
     my ( $self, $p ) = @_;
 
-    my $debug = $self->retrieve_data('debug');
-
-    my $run_on_dow = $self->retrieve_data('run_on_dow');
-    if ($run_on_dow) {
-        if ( (localtime)[6] == $run_on_dow ) {
-            say "Run on Day of Week $run_on_dow matches current day of week "
-              . (localtime)[6]
-              if $debug >= 1;
-        }
-        else {
-            say
-"Run on Day of Week $run_on_dow does not match current day of week "
-              . (localtime)[6]
-              if $debug >= 1;
-            return;
-        }
+    my $configuration = $self->retrieve_data('configuration');
+    my $data = eval { YAML::XS::Load( Encode::encode_utf8($configuration) ); };
+    if ($@) {
+        warn "Unable to parse yaml `$configuration` : $@";
+        return;
     }
 
-    my $sftp_filename = $self->retrieve_data('filename');
-    my $sftp_dir = $self->retrieve_data('dir');
+    foreach my $job (@$data) {
+        my $debug = $job->{debug} || 0;
 
-    my $sftp = $self->get_sftp();
+        my $run_on_dow = $job->{run_on_dow};
+        if ($run_on_dow) {
+            if ( (localtime)[6] == $run_on_dow ) {
+                say "Run on Day of Week $run_on_dow"
+                  . " matches current day of week "
+                  . (localtime)[6]
+                  if $debug >= 1;
+            }
+            else {
+                say "Run on Day of Week $run_on_dow"
+                  . " does not match current day of week "
+                  . (localtime)[6]
+                  if $debug >= 1;
+                return;
+            }
+        }
 
-    my $tempdir = tempdir();
-    #$sftp->setcwd($sftp_dir) or die "unable to change cwd: " . $sftp->error;
+        my $sftp_filename = $job->{filename};
 
-    warn qq{DOWNLOADING '$sftp_dir/$sftp_filename' TO '$tempdir/$sftp_filename'};
-    $sftp->get( "$sftp_dir/$sftp_filename", "$tempdir/$sftp_filename" )
-      or die "Patrons Importer - SFTP ERROR: get failed: " . $sftp->error;
+        my $sftp = $self->get_sftp($job);
 
-    my $confirm               = $self->retrieve_data('confirm');
-    my $matchpoint            = $self->retrieve_data('matchpoint');
-    my $default               = $self->retrieve_data('default');
-    my $overwrite             = $self->retrieve_data('overwrite');
-    my $preserve_field        = $self->retrieve_data('preserve_field');
-    my $update_expiration     = $self->retrieve_data('update_expiration');
-    my $expiration_from_today = $self->retrieve_data('expiration_from_today');
-    my $verbose               = $self->retrieve_data('verbose');
-    my $extra_options         = $self->retrieve_data('extra_options');
-    my $preserve_extended_attributes =
-      $self->retrieve_data('preserve_extended_attributes');
+        my $tempdir = tempdir();
 
-    my $cmd =
-      qq{/usr/share/koha/bin/import_patrons.pl --file $tempdir/$sftp_filename};
+        warn qq{DOWNLOADING '$sftp_dir/$sftp_filename' }
+          . qq{TO '$tempdir/$sftp_filename'};
 
-    $cmd .= " --confirm"                        if $confirm;
-    $cmd .= " --matchpoint $matchpoint"         if $matchpoint;
-    $cmd .= " --default $default"               if $default;
-    $cmd .= " --overwrite"                      if $overwrite;
-    $cmd .= " --preserve_field $preserve_field" if $preserve_field;
-    $cmd .= " --preserve-extended-attributes" if $preserve_extended_attributes;
-    $cmd .= " --update-expiration"            if $update_expiration;
-    $cmd .= " --expiration-from-today"        if $expiration_from_today;
-    $cmd .= " --verbose"                      if $verbose;
-    $cmd .= " $extra_options"                 if $extra_options;
+        $sftp->get( "$sftp_dir/$sftp_filename", "$tempdir/$sftp_filename" )
+          or die "Patrons Importer - SFTP ERROR: get failed: " . $sftp->error;
 
-    say "COMMAND: $cmd";
-    my $output = qx{$cmd};
-    say "COMMAND OUTPUT: $output";
+        ## FIXME - THIS IS WHERE THE MAGIC GOES
 
-    #unlink "$tempdir/$sftp_filename";
+        my $params = $job->{parameters};
+        my $return = $Import->import_patrons(
+            {
+                file => $handle,
+                %$params,
+            }
+        );
+
+        my $feedback    = $return->{feedback};
+        my $errors      = $return->{errors};
+        my $imported    = $return->{imported};
+        my $overwritten = $return->{overwritten};
+        my $alreadyindb = $return->{already_in_db};
+        my $invalid     = $return->{invalid};
+        my $total       = $imported + $alreadyindb + $invalid + $overwritten;
+
+        if ($verbose) {
+            say q{};
+            say "Import complete:";
+            say "Imported:    $imported";
+            say "Overwritten: $overwritten";
+            say "Skipped:     $alreadyindb";
+            say "Invalid:     $invalid";
+            say "Total:       $total";
+            say q{};
+        }
+
+        if ( $verbose > 1 ) {
+            say "Errors:";
+            say Data::Dumper::Dumper($errors);
+        }
+
+        if ( $verbose > 2 ) {
+            say "Feedback:";
+            say Data::Dumper::Dumper($feedback);
+        }
+
+    }
 }
 
 =head3 install
