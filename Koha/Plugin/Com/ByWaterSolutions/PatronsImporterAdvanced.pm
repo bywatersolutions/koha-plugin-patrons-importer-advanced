@@ -6,6 +6,7 @@ use Modern::Perl;
 ## Required for all plugins
 use base qw(Koha::Plugins::Base);
 
+use C4::Context;
 use Koha::Encryption;
 use Koha::Patrons::Import;
 
@@ -141,7 +142,20 @@ sub cronjob_nightly {
 
     my $Import = Koha::Patrons::Import->new();
 
+    # Load transformation subroutines from kaho-conf.xml
+    my $koha_conf_data = C4::Context->config("patrons_importer_advanced");
+    my $transformers   = $koha_conf_data->{transformers};
+    if ($transformers) {
+        foreach my $sub_name ( keys %$transformers ) {
+            my $code   = $transformers->{$sub_name};
+            my $subref = eval $code;
+            $transformers->{$sub_name} = $subref;
+        }
+    }
+
     foreach my $job (@$data) {
+        next if $job->{disable};
+
         my $debug   = $job->{debug}   || 0;
         my $verbose = $job->{verbose} || 0;
 
@@ -192,7 +206,6 @@ sub cronjob_nightly {
         # Write a header if needed
         if ( my $header = $job->{file}->{header} ) {
             my ( $new_tmp_fh, $new_tmp_filename ) = tempfile();
-            warn "HEADER: $header";
 
             open my $new, '>:encoding(UTF-8)', $new_tmp_filename
               or die "$new_tmp_filename: $!";
@@ -216,7 +229,6 @@ sub cronjob_nightly {
 
             my $columns = $job->{columns};
             foreach my $column (@$columns) {
-                warn "WORKING ON COLUMN " . Data::Dumper::Dumper($column);
                 my $output_column = $column->{output};
                 say "NO OUPUT SPECIFIED FOR " . Data::Dumper::Dumper($column)
                   unless $output;
@@ -224,13 +236,13 @@ sub cronjob_nightly {
                 if ( defined $column->{static} ) {
                     my $static_value = $column->{static};
                     $output->{$output_column} = $static_value;
-                    warn "POST STATIC: " . Data::Dumper::Dumper($output);
                 }
                 elsif ( defined $column->{input} ) {
                     my $input_column = $column->{input};
-                    my $prefix       = $column->{prefix}  // q{};
-                    my $postfix      = $column->{postfix} // q{};
-                    my $value = $prefix . $input->{$input_column} . $postfix;
+                    my $value        = $input->{$input_column} // q{};
+                    my $prefix       = $column->{prefix}       // q{};
+                    my $postfix      = $column->{postfix}      // q{};
+                    $value = $prefix . $value . $postfix;
                     $output->{$output_column} = $value;
                 }
                 elsif ( defined $column->{mapping} ) {
@@ -242,10 +254,10 @@ sub cronjob_nightly {
                     my $value       = $map->{$input_value};
                     $output->{$output_column} = $value;
                 }
-                elsif ( defined $column->{subroutine} ) {
-                    my $code = $column->{subroutine};
-                    $debug && say "CODE: $code";
-                    my $sub = eval $code;
+                elsif ( defined $column->{transformer} ) {
+                    my $sub_name = $column->{transformer};
+                    my $sub      = $transformers->{$sub_name};
+                    die "NO TRANSFORMER NAMED $sub_name DEFINED" unless $sub;
                     &$sub( $input, $output, $stash );
                 }
             }
