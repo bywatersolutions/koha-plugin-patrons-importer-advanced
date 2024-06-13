@@ -96,7 +96,7 @@ The transformers are stored within the `config` block of the Koha configuration 
 
 # Downloading
 
-From the [release page](https://github.com/bywatersolutions/koha-plugin-patrons-importer/releases) you can download the latest release in `kpz` format.
+From the [release page](https://github.com/bywatersolutions/koha-plugin-patrons-importer-advanced/releases) you can download the latest release in `kpz` format.
 
 # Installation
 

@@ -4,7 +4,7 @@ This plugin will automatically download patron CSV files and import them into Ko
 
 # Downloading
 
-From the [release page](https://github.com/bywatersolutions/koha-plugin-patrons-importer/releases) you can download the latest release in `kpz` format.
+From the [release page](https://github.com/bywatersolutions/koha-plugin-patrons-importer-advanced/releases) you can download the latest release in `kpz` format.
 
 # Installation
 
