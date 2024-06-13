@@ -21,7 +21,7 @@
         [% ELSIF test_completed %]
             <div class="alert alert-success" role="alert">Test completed successfully!</div>
         [% ELSE %]
-            <form method="get">
+            <form method="post">
               <input type="hidden" name="class" value="[% CLASS %]"/>
               <input type="hidden" name="method" value="[% METHOD %]"/>
               <input type="hidden" name="test" value="1" />

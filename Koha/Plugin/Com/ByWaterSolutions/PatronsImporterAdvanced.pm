@@ -7,9 +7,12 @@ use Modern::Perl;
 use base qw(Koha::Plugins::Base);
 
 use Koha::Encryption;
+use Koha::Patrons::Import;
 
-use File::Temp qw(tempdir);
+use Data::Dumper;
+use File::Temp qw(tempdir tempfile);
 use Net::SFTP::Foreign;
+use Text::CSV::Slurp;
 use Try::Tiny;
 
 ## Here we set our plugin version
@@ -64,7 +67,10 @@ sub configure {
 
         ## Grab the values we already have for our settings, if any exist
         $template->param(
-            configuration => $self->retrieve_data('configuration'), );
+            configuration => Koha::Encryption->new->decrypt_hex(
+                $self->retrieve_data('configuration')
+            )
+        );
 
         if ( $cgi->param('test') ) {
             try {
@@ -82,7 +88,9 @@ sub configure {
     else {
         $self->store_data(
             {
-                configuration => $cgi->param('configuration'),
+                configuration => Koha::Encryption->new->encrypt_hex(
+                    $cgi->param('configuration')
+                ),
             }
         );
         $self->go_home();
@@ -122,18 +130,23 @@ sub get_sftp {
 sub cronjob_nightly {
     my ( $self, $p ) = @_;
 
-    my $configuration = $self->retrieve_data('configuration');
+    my $configuration = Koha::Encryption->new->decrypt_hex(
+        $self->retrieve_data('configuration') );
+
     my $data = eval { YAML::XS::Load( Encode::encode_utf8($configuration) ); };
     if ($@) {
-        warn "Unable to parse yaml `$configuration` : $@";
+        say "CRITICAL ERROR: Unable to parse yaml `$configuration` : $@";
         return;
     }
 
+    my $Import = Koha::Patrons::Import->new();
+
     foreach my $job (@$data) {
-        my $debug = $job->{debug} || 0;
+        my $debug   = $job->{debug}   || 0;
+        my $verbose = $job->{verbose} || 0;
 
         my $run_on_dow = $job->{run_on_dow};
-        if ($run_on_dow) {
+        if ( defined $run_on_dow ) {
             if ( (localtime)[6] == $run_on_dow ) {
                 say "Run on Day of Week $run_on_dow"
                   . " matches current day of week "
@@ -149,19 +162,107 @@ sub cronjob_nightly {
             }
         }
 
-        my $sftp_filename = $job->{filename};
+        my $directory;
+        my $filename;
 
-        my $sftp = $self->get_sftp($job);
+        if ( $job->{local} ) {
+            $directory = $job->{local}->{directory};
+            $filename  = $job->{local}->{filename};
+            $debug && say "Loading local file from $directory/$filename";
+        }
+        elsif ( $job->{sftp} ) {
+            $directory = tempdir();
+            $filename  = $job->{sftp}->{filename};
 
-        my $tempdir = tempdir();
+            my $sftp_dir = $job->{sftp}->{directory};
 
-        warn qq{DOWNLOADING '$sftp_dir/$sftp_filename' }
-          . qq{TO '$tempdir/$sftp_filename'};
+            my $sftp = $self->get_sftp($job);
 
-        $sftp->get( "$sftp_dir/$sftp_filename", "$tempdir/$sftp_filename" )
-          or die "Patrons Importer - SFTP ERROR: get failed: " . $sftp->error;
+            $debug
+              && say qq{Downloading '$sftp_dir/$filename' }
+              . qq{via SFTP to '$directory/$filename'};
 
-        ## FIXME - THIS IS WHERE THE MAGIC GOES
+            $sftp->get( "$sftp_dir/$filename", "$directory/$filename" )
+              or die "Patrons Importer - SFTP ERROR: get failed: "
+              . $sftp->error;
+        }
+
+        my $filepath = "$directory/$filename";
+
+        # Write a header if needed
+        if ( my $header = $job->{file}->{header} ) {
+            my ( $new_tmp_fh, $new_tmp_filename ) = tempfile();
+            warn "HEADER: $header";
+
+            open my $new, '>:encoding(UTF-8)', $new_tmp_filename
+              or die "$new_tmp_filename: $!";
+            open my $old, '<:encoding(UTF-8)', $filepath or die "$filepath: $!";
+
+            print {$new} "$header\n";
+            print {$new} $_ while <$old>;
+            close $new;
+
+            $filepath = $new_tmp_filename;
+        }
+
+        my $options = $job->{csv_options} || {};
+        my $data    = Text::CSV::Slurp->load( file => $filepath, %$options );
+
+        my @output_data;
+        foreach my $input (@$data) {
+            $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
+            my $output = {};
+            my $stash  = {};
+
+            my $columns = $job->{columns};
+            foreach my $column (@$columns) {
+                warn "WORKING ON COLUMN " . Data::Dumper::Dumper($column);
+                my $output_column = $column->{output};
+                say "NO OUPUT SPECIFIED FOR " . Data::Dumper::Dumper($column)
+                  unless $output;
+
+                if ( defined $column->{static} ) {
+                    my $static_value = $column->{static};
+                    $output->{$output_column} = $static_value;
+                    warn "POST STATIC: " . Data::Dumper::Dumper($output);
+                }
+                elsif ( defined $column->{input} ) {
+                    my $input_column = $column->{input};
+                    my $prefix       = $column->{prefix}  // q{};
+                    my $postfix      = $column->{postfix} // q{};
+                    my $value = $prefix . $input->{$input_column} . $postfix;
+                    $output->{$output_column} = $value;
+                }
+                elsif ( defined $column->{mapping} ) {
+                    my $mapping = $column->{mapping};
+                    my $source  = $mapping->{source};
+                    my $map     = $mapping->{map};
+
+                    my $input_value = $column->{$source};
+                    my $value       = $map->{$input_value};
+                    $output->{$output_column} = $value;
+                }
+                elsif ( defined $column->{subroutine} ) {
+                    my $code = $column->{subroutine};
+                    $debug && say "CODE: $code";
+                    my $sub = eval $code;
+                    &$sub( $input, $output, $stash );
+                }
+            }
+
+            $debug && say "OUTPUT: " . Data::Dumper::Dumper($output);
+
+            push( @output_data, $output );
+        }
+
+        my ( $tmp_fh, $tmp_filename ) = tempfile();
+        my $csv = Text::CSV::Slurp->create( input => \@output_data );
+        print $tmp_fh $csv;
+        close $tmp_fh;
+
+        # Reopen file handle for reading
+        my $handle;
+        open( $handle, "<:encoding(UTF-8)", $tmp_filename ) or die $!;
 
         my $params = $job->{parameters};
         my $return = $Import->import_patrons(
@@ -214,12 +315,6 @@ or false if it failed.
 
 sub install() {
     my ( $self, $args ) = @_;
-
-    $self->store_data(
-        {
-            run_on_dow => "0",
-        }
-    );
 
     return 1;
 }
