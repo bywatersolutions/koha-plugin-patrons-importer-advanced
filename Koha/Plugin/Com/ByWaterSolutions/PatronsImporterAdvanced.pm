@@ -21,14 +21,14 @@ our $VERSION         = "{VERSION}";
 our $MINIMUM_VERSION = "{MINIMUM_VERSION}";
 
 our $metadata = {
-    name            => 'Patrons Importer',
+    name            => 'Advanced Patrons Importer',
     author          => 'Kyle M Hall',
-    date_authored   => '2022-12-02',
+    date_authored   => '2024-06-12',
     date_updated    => "1900-01-01",
     minimum_version => $MINIMUM_VERSION,
     maximum_version => undef,
     version         => $VERSION,
-    description     => 'Automate importing patron CSV files from SFTP',
+    description     => 'Automate importing patron CSV files with column mapping and transformations',
 };
 
 =head3 new
