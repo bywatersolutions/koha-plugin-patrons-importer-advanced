@@ -28,7 +28,8 @@ our $metadata = {
     minimum_version => $MINIMUM_VERSION,
     maximum_version => undef,
     version         => $VERSION,
-    description     => 'Automate importing patron CSV files with column mapping and transformations',
+    description     =>
+'Automate importing patron CSV files with column mapping and transformations',
 };
 
 =head3 new
@@ -74,14 +75,23 @@ sub configure {
         );
 
         if ( $cgi->param('test') ) {
-            try {
-                my $sftp = $self->get_sftp();
-            }
-            catch {
-                $template->param( test_error => $_ );
-            };
+            my $data = $self->get_configuration();
 
-            $template->param( test_completed => 1 );
+            my @results;
+            foreach my $job (@$data) {
+                if ( $job->{sftp} ) {
+                    my $error;
+                    try {
+                        my $sftp = $self->get_sftp($job);
+                    }
+                    catch {
+                        $error = $_;
+                    };
+                    push( @results, { job => $job, error => $error } );
+                }
+            }
+
+            $template->param( results => \@results, test_completed => 1 );
         }
 
         $self->output_html( $template->output() );
@@ -109,7 +119,8 @@ sub get_sftp {
         host     => $sftp_host,
         user     => $sftp_username,
         port     => 22,
-        password => $sftp_password
+        password => $sftp_password,
+        timeout  => 5, # seconds
     );
     $sftp->die_on_error( "Patrons Importer - "
           . "SFTP ERROR: Unable to establish SFTP connection for "
@@ -124,6 +135,24 @@ sub get_sftp {
     return $sftp;
 }
 
+=head3 get_configuration
+
+=cut
+
+sub get_configuration {
+    my ($self) = @_;
+
+    my $configuration = Koha::Encryption->new->decrypt_hex(
+        $self->retrieve_data('configuration') );
+
+    my $data = eval { YAML::XS::Load( Encode::encode_utf8($configuration) ); };
+    if ($@) {
+        die "CRITICAL ERROR: Unable to parse yaml `$configuration` : $@";
+    }
+
+    return $data;
+}
+
 =head3 cronjob_nightly
 
 =cut
@@ -131,14 +160,7 @@ sub get_sftp {
 sub cronjob_nightly {
     my ( $self, $p ) = @_;
 
-    my $configuration = Koha::Encryption->new->decrypt_hex(
-        $self->retrieve_data('configuration') );
-
-    my $data = eval { YAML::XS::Load( Encode::encode_utf8($configuration) ); };
-    if ($@) {
-        say "CRITICAL ERROR: Unable to parse yaml `$configuration` : $@";
-        return;
-    }
+    my $data = $self->get_configuration();
 
     my $Import = Koha::Patrons::Import->new();
 
