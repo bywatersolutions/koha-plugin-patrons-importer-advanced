@@ -68,11 +68,10 @@ sub configure {
         }
 
         ## Grab the values we already have for our settings, if any exist
-        $template->param(
-            configuration => Koha::Encryption->new->decrypt_hex(
-                $self->retrieve_data('configuration')
-            )
-        );
+        my $configuration = $self->retrieve_data('configuration') || q{};
+        $configuration => Koha::Encryption->new->decrypt_hex($configuration)
+          if $configuration;
+        $template->param( configuration => $configuration );
 
         if ( $cgi->param('test') ) {
             my $data = $self->get_configuration();
