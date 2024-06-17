@@ -72,7 +72,7 @@ The transformers are stored within the `config` block of the Koha configuration 
         </dob>
         <phone>
             sub {
-              my ( $input_hash, $output_hash, $stash ) = @_;
+              my ( $input_hash, $output_hash, $stash, $job ) = @_;
               my $phone = $input_hash->{"Cell Phone"} || $input_hash->{"Phone"};
               $phone =~ s/\D//g;
               $output_hash->{phone} = $phone;
@@ -80,12 +80,11 @@ The transformers are stored within the `config` block of the Koha configuration 
         </phone>
         <pin>
             sub {
-              my ( $input_hash, $output_hash, $stash ) = @_;
+              my ( $input_hash, $output_hash, $stash, $job ) = @_;
               require Koha::Patrons;
               my $count = Koha::Patrons->count({ cardnumber => $output_hash->{cardnumber} });
-              unless ( $count ) {
+              if ( !$count || $job->{force_generate_pin} ) {
                my $pin = 1000 + int(rand(8999));
-               $output_hash->{password} = $pin;
                $output_hash->{patron_attributes} = "PIN:$pin";
               }
             };

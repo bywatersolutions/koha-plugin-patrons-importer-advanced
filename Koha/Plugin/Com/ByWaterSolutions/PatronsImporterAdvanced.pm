@@ -278,7 +278,7 @@ sub cronjob_nightly {
                     my $sub_name = $column->{transformer};
                     my $sub      = $transformers->{$sub_name};
                     die "NO TRANSFORMER NAMED $sub_name DEFINED" unless $sub;
-                    &$sub( $input, $output, $stash );
+                    &$sub( $input, $output, $stash, $job );
                 }
             }
 
