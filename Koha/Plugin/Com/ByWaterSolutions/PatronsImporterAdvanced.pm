@@ -178,23 +178,21 @@ sub cronjob_nightly {
     foreach my $job (@$data) {
         next if $job->{disable};
 
+        say "Working on job: $job->{name}" if $debug;
+
         my $debug   = $job->{debug}   || 0;
         my $verbose = $job->{verbose} || 0;
 
         my $run_on_dow = $job->{run_on_dow};
         if ( defined $run_on_dow ) {
-            if ( (localtime)[6] == $run_on_dow ) {
-                say "Run on Day of Week $run_on_dow"
-                  . " matches current day of week "
-                  . (localtime)[6]
-                  if $debug >= 1;
+            my $current_dow = (localtime)[6];
+            $is_day_to_run = index($run_on_dow, $current_dow) != -1
+            if ( $is_day_to_run ) {
+                say "Running import, $current_dow is listed in $run_on_dow" if $debug >= 1;
             }
             else {
-                say "Run on Day of Week $run_on_dow"
-                  . " does not match current day of week "
-                  . (localtime)[6]
-                  if $debug >= 1;
-                return;
+                say "Skipping import, $current_dow is listed in $run_on_dow" if $debug >= 1;
+                next;
             }
         }
 
