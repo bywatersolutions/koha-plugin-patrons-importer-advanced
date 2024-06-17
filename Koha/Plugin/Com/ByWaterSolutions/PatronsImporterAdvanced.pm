@@ -178,15 +178,15 @@ sub cronjob_nightly {
     foreach my $job (@$data) {
         next if $job->{disable};
 
-        say "Working on job: $job->{name}" if $debug;
-
         my $debug   = $job->{debug}   || 0;
         my $verbose = $job->{verbose} || 0;
+
+        say "Working on job: $job->{name}" if $debug;
 
         my $run_on_dow = $job->{run_on_dow};
         if ( defined $run_on_dow ) {
             my $current_dow = (localtime)[6];
-            $is_day_to_run = index($run_on_dow, $current_dow) != -1
+            my $is_day_to_run = index($run_on_dow, $current_dow) != -1;
             if ( $is_day_to_run ) {
                 say "Running import, $current_dow is listed in $run_on_dow" if $debug >= 1;
             }
@@ -239,10 +239,10 @@ sub cronjob_nightly {
         }
 
         my $options = $job->{csv_options} || {};
-        my $data    = Text::CSV::Slurp->load( file => $filepath, %$options );
+        my $inputs    = Text::CSV::Slurp->load( file => $filepath, %$options );
 
         my @output_data;
-        foreach my $input (@$data) {
+        foreach my $input (@$inputs) {
             $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
             my $output = {};
             my $stash  = {};
