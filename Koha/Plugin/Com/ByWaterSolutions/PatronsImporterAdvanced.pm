@@ -263,8 +263,14 @@ sub cronjob_nightly {
                     my $input_column = $column->{input};
                     my $value        = $input->{$input_column} // q{};
                     my $prefix       = $column->{prefix}       // q{};
-                    my $postfix      = $column->{postfix}      // q{};
-                    $value = $prefix . $value . $postfix;
+                    my $padding      = $column->{padding}      // q{};
+                    my $length       = $column->{length}       // 0;
+
+                    my $padding_length = $length - length($prefix) - length($value);
+                    $padding_length = 0 if $padding_length < 0;
+                    $padding = $padding x $padding_length;
+
+                    $value = $prefix . $padding .$value;
                     $output->{$output_column} = $value;
                 }
                 elsif ( defined $column->{mapping} ) {

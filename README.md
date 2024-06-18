@@ -46,7 +46,8 @@ It can support unlimited files with different configurations and allows for rena
     - output: surname    # Input will read the input column from the input file and place that value in the specified output column
       input: "Last Name" # essentially just renaming the column
       prefix: 1234       # Prepend the input column value with this value
-      postfix: 1234      # Append this value to the input column value
+      padding: "0"       # Character that should be used to pad the gap between the prefix and input if a minimum length is set
+      length: 14         # Minimum length the input should be. Value will be padded between the prefix and value if it does not meet this length
     - name: Phone Number
       transformer: myTransformer  # Transformer will execute a custom perl subroutine defined in the koha conf file
     - output: categorycode  # Mapping allows for the transformation of one set of enumerated data to a different set of unumerated data
