@@ -28,7 +28,7 @@
             [% END %]
         [% ELSIF test_completed %]
         [% ELSE %]
-            <form method="get">
+            <form method="post">
               <input type="hidden" name="class" value="[% CLASS %]"/>
               <input type="hidden" name="method" value="[% METHOD %]"/>
               <input type="hidden" name="test" value="1" />

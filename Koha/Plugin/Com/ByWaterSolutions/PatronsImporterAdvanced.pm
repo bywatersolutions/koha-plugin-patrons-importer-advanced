@@ -278,7 +278,7 @@ sub cronjob_nightly {
                     my $source  = $mapping->{source};
                     my $map     = $mapping->{map};
 
-                    my $input_value = $column->{$source};
+                    my $input_value = $input->{$source};
                     my $value       = $map->{$input_value};
                     $output->{$output_column} = $value;
                 }
