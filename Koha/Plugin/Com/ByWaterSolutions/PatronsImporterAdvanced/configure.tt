@@ -29,6 +29,8 @@
         [% ELSIF test_completed %]
         [% ELSE %]
             <form method="post">
+              [% INCLUDE 'csrf-token.inc' %]
+              <input type="hidden" name="op" value="cud-test"/>
               <input type="hidden" name="class" value="[% CLASS %]"/>
               <input type="hidden" name="method" value="[% METHOD %]"/>
               <input type="hidden" name="test" value="1" />
@@ -48,6 +50,8 @@
         </div>
 
         <form method="post">
+          [% INCLUDE 'csrf-token.inc' %]
+          <input type="hidden" name="op" value="cud-save"/>
           <input type="hidden" name="class" value="[% CLASS %]"/>
           <input type="hidden" name="method" value="[% METHOD %]"/>
           <input type="hidden" name="save" value="1" />
