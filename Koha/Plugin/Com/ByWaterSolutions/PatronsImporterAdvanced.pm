@@ -246,6 +246,9 @@ sub cronjob_nightly {
         my @output_data;
         foreach my $input (@$inputs) {
             $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
+
+            say "DISABLED, SKIPPING..." if $input->{disabled};
+
             my $output = {};
             my $stash  = {};
 
