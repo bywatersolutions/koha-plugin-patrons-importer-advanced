@@ -173,6 +173,7 @@ sub cronjob_nightly {
         foreach my $sub_name ( keys %$transformers ) {
             my $code   = $transformers->{$sub_name};
             my $subref = eval $code;
+            die "ERROR IN $sub_name: $@" if $@;
             $transformers->{$sub_name} = $subref;
         }
     }
