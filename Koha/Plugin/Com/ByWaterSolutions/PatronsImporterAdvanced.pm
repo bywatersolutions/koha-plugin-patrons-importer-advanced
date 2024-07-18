@@ -248,7 +248,18 @@ sub cronjob_nightly {
         foreach my $input (@$inputs) {
             $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
 
-            say "DISABLED, SKIPPING..." if $input->{disabled};
+            if ( $input->{disabled} ) {
+                say "DISABLED, SKIPPING...";
+                next;
+            }
+
+            foreach my $input_column ( keys %{ $job->{skip_incoming} } ) {
+                my $value = $job->{skip_incoming}->{$input_column};
+                if ( $input->{$input_column} eq $value ) {
+                    $debug && say "SKIPPING: Row has column '$input_column' value of $value, skipping!";
+                    next;
+                }
+            }
 
             my $output = {};
             my $stash  = {};
