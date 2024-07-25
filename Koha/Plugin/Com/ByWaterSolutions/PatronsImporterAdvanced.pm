@@ -220,7 +220,7 @@ sub cronjob_nightly {
               . qq{via SFTP to '$directory/$filename'};
 
             $sftp->get( "$sftp_dir/$filename", "$directory/$filename" )
-              or die "Patrons Importer - SFTP ERROR: get failed: "
+              or die "Patrons Importer - SFTP ERROR: get failed for $directory/$filename :"
               . $sftp->error;
         }
 
