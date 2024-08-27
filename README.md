@@ -59,7 +59,10 @@ It can support unlimited files with different configurations and allows for rena
           "12": HIGHSCHOOL
           K: GRADESCHOOL
   skip_incoming: # If the incoming file row has a column with this name and a matching value, that row will not be imported as a patron:
-    "Column name": "Value"
+    "Some Column":
+      - "9"
+      - "71"
+      - "106"
 ```
 
 The transformers are stored within the `config` block of the Koha configuration file:

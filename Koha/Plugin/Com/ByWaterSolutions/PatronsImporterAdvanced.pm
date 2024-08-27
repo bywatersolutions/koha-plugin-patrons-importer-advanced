@@ -253,13 +253,19 @@ sub cronjob_nightly {
                 next;
             }
 
+            my $skip = 0;
             foreach my $input_column ( keys %{ $job->{skip_incoming} } ) {
-                my $value = $job->{skip_incoming}->{$input_column};
-                if ( $input->{$input_column} eq $value ) {
-                    $debug && say "SKIPPING: Row has column '$input_column' value of $value, skipping!";
-                    next;
+                my $values = $job->{skip_incoming}->{$input_column};
+                foreach my $value (@$values) {
+                    if ( $input->{$input_column} eq $value ) {
+                        $debug
+                          && say "SKIPPING: Row has column '$input_column' value of $value, skipping!";
+                        $skip = 1;
+                        last;
+                    }
                 }
             }
+            next if $skip;
 
             my $output = {};
             my $stash  = {};
