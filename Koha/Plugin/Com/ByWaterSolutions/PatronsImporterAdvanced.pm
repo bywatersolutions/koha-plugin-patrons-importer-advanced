@@ -179,191 +179,203 @@ sub cronjob_nightly {
     }
 
     foreach my $job (@$data) {
-        next if $job->{disable};
+        try {
+            next if $job->{disable};
 
-        my $debug   = $job->{debug}   || 0;
-        my $verbose = $job->{verbose} || 0;
+            my $debug   = $job->{debug}   || 0;
+            my $verbose = $job->{verbose} || 0;
 
-        say "Working on job: $job->{name}" if $debug;
+            say "Working on job: $job->{name}" if $debug;
 
-        my $run_on_dow = $job->{run_on_dow};
-        if ( defined $run_on_dow ) {
-            my $current_dow = (localtime)[6];
-            my $is_day_to_run = index($run_on_dow, $current_dow) != -1;
-            if ( $is_day_to_run ) {
-                say "Running import, $current_dow is listed in $run_on_dow" if $debug >= 1;
-            }
-            else {
-                say "Skipping import, $current_dow is listed in $run_on_dow" if $debug >= 1;
-                next;
-            }
-        }
-
-        my $directory;
-        my $filename;
-
-        if ( $job->{local} ) {
-            $directory = $job->{local}->{directory};
-            $filename  = $job->{local}->{filename};
-            $debug && say "Loading local file from $directory/$filename";
-        }
-        elsif ( $job->{sftp} ) {
-            $directory = tempdir();
-            $filename  = $job->{sftp}->{filename};
-
-            my $sftp_dir = $job->{sftp}->{directory};
-
-            my $sftp = $self->get_sftp($job);
-
-            $debug
-              && say qq{Downloading '$sftp_dir/$filename' }
-              . qq{via SFTP to '$directory/$filename'};
-
-            $sftp->get( "$sftp_dir/$filename", "$directory/$filename" )
-              or die "Patrons Importer - SFTP ERROR: get failed for $sftp_dir/$filename :"
-              . $sftp->error;
-        }
-
-        my $filepath = "$directory/$filename";
-
-        # Write a header if needed
-        if ( my $header = $job->{file}->{header} ) {
-            my ( $new_tmp_fh, $new_tmp_filename ) = tempfile();
-            binmode( $new_tmp_fh, ":utf8" );
-
-            open my $new, '>:encoding(UTF-8)', $new_tmp_filename
-              or die "$new_tmp_filename: $!";
-            open my $old, '<:encoding(UTF-8)', $filepath or die "$filepath: $!";
-
-            print {$new} "$header\n";
-            print {$new} $_ while <$old>;
-            close $new;
-
-            $filepath = $new_tmp_filename;
-        }
-
-        my $options = $job->{csv_options} || {};
-        my $inputs    = Text::CSV::Slurp->load( file => $filepath, %$options );
-
-        my @output_data;
-        foreach my $input (@$inputs) {
-            $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
-
-            if ( $input->{disabled} ) {
-                say "DISABLED, SKIPPING...";
-                next;
+            my $run_on_dow = $job->{run_on_dow};
+            if ( defined $run_on_dow ) {
+                my $current_dow   = (localtime)[6];
+                my $is_day_to_run = index( $run_on_dow, $current_dow ) != -1;
+                if ($is_day_to_run) {
+                    say "Running import, $current_dow is listed in $run_on_dow"
+                      if $debug >= 1;
+                }
+                else {
+                    say "Skipping import, $current_dow is listed in $run_on_dow"
+                      if $debug >= 1;
+                    next;
+                }
             }
 
-            my $skip = 0;
-            foreach my $input_column ( keys %{ $job->{skip_incoming} } ) {
-                my $values = $job->{skip_incoming}->{$input_column};
-                foreach my $value (@$values) {
-                    if ( $input->{$input_column} eq $value ) {
-                        $debug
-                          && say "SKIPPING: Row has column '$input_column' value of $value, skipping!";
-                        $skip = 1;
-                        last;
+            my $directory;
+            my $filename;
+
+            if ( $job->{local} ) {
+                $directory = $job->{local}->{directory};
+                $filename  = $job->{local}->{filename};
+                $debug && say "Loading local file from $directory/$filename";
+            }
+            elsif ( $job->{sftp} ) {
+                $directory = tempdir();
+                $filename  = $job->{sftp}->{filename};
+
+                my $sftp_dir = $job->{sftp}->{directory};
+
+                my $sftp = $self->get_sftp($job);
+
+                $debug
+                  && say qq{Downloading '$sftp_dir/$filename' }
+                  . qq{via SFTP to '$directory/$filename'};
+
+                $sftp->get( "$sftp_dir/$filename", "$directory/$filename" )
+                  or die
+"Patrons Importer - SFTP ERROR: get failed for $sftp_dir/$filename :"
+                  . $sftp->error;
+            }
+
+            my $filepath = "$directory/$filename";
+
+            # Write a header if needed
+            if ( my $header = $job->{file}->{header} ) {
+                my ( $new_tmp_fh, $new_tmp_filename ) = tempfile();
+                binmode( $new_tmp_fh, ":utf8" );
+
+                open my $new, '>:encoding(UTF-8)', $new_tmp_filename
+                  or die "$new_tmp_filename: $!";
+                open my $old, '<:encoding(UTF-8)', $filepath
+                  or die "$filepath: $!";
+
+                print {$new} "$header\n";
+                print {$new} $_ while <$old>;
+                close $new;
+
+                $filepath = $new_tmp_filename;
+            }
+
+            my $options = $job->{csv_options} || {};
+            my $inputs = Text::CSV::Slurp->load( file => $filepath, %$options );
+
+            my @output_data;
+            foreach my $input (@$inputs) {
+                $debug && say "WORKING ON " . Data::Dumper::Dumper($input);
+
+                if ( $input->{disabled} ) {
+                    say "DISABLED, SKIPPING...";
+                    next;
+                }
+
+                my $skip = 0;
+                foreach my $input_column ( keys %{ $job->{skip_incoming} } ) {
+                    my $values = $job->{skip_incoming}->{$input_column};
+                    foreach my $value (@$values) {
+                        if ( $input->{$input_column} eq $value ) {
+                            $debug
+                              && say
+"SKIPPING: Row has column '$input_column' value of $value, skipping!";
+                            $skip = 1;
+                            last;
+                        }
                     }
                 }
+                next if $skip;
+
+                my $output = {};
+                my $stash  = {};
+
+                my $columns = $job->{columns};
+                foreach my $column (@$columns) {
+                    my $output_column = $column->{output};
+                    say "NO OUPUT SPECIFIED FOR "
+                      . Data::Dumper::Dumper($column)
+                      unless $output;
+
+                    if ( defined $column->{static} ) {
+                        my $static_value = $column->{static};
+                        $output->{$output_column} = $static_value;
+                    }
+                    elsif ( defined $column->{input} ) {
+                        my $input_column = $column->{input};
+                        my $value        = $input->{$input_column} // q{};
+                        my $prefix       = $column->{prefix}       // q{};
+                        my $padding      = $column->{padding}      // q{};
+                        my $length       = $column->{length}       // 0;
+
+                        my $padding_length =
+                          $length - length($prefix) - length($value);
+                        $padding_length = 0 if $padding_length < 0;
+                        $padding        = $padding x $padding_length;
+
+                        $value = $prefix . $padding . $value;
+                        $output->{$output_column} = $value;
+                    }
+                    elsif ( defined $column->{mapping} ) {
+                        my $mapping = $column->{mapping};
+                        my $source  = $mapping->{source};
+                        my $map     = $mapping->{map};
+
+                        my $input_value = $input->{$source};
+                        my $value       = $map->{$input_value};
+                        $output->{$output_column} = $value;
+                    }
+                    elsif ( defined $column->{transformer} ) {
+                        my $sub_name = $column->{transformer};
+                        my $sub      = $transformers->{$sub_name};
+                        die "NO TRANSFORMER NAMED $sub_name DEFINED"
+                          unless $sub;
+                        &$sub( $input, $output, $stash, $job );
+                    }
+                }
+
+                $debug && say "OUTPUT: " . Data::Dumper::Dumper($output);
+
+                push( @output_data, $output );
             }
-            next if $skip;
 
-            my $output = {};
-            my $stash  = {};
+            my ( $tmp_fh, $tmp_filename ) = tempfile();
+            binmode( $tmp_fh, ":utf8" );
+            my $csv = Text::CSV::Slurp->create( input => \@output_data );
+            print $tmp_fh $csv;
+            close $tmp_fh;
 
-            my $columns = $job->{columns};
-            foreach my $column (@$columns) {
-                my $output_column = $column->{output};
-                say "NO OUPUT SPECIFIED FOR " . Data::Dumper::Dumper($column)
-                  unless $output;
+            # Reopen file handle for reading
+            my $handle;
+            open( $handle, "<:encoding(UTF-8)", $tmp_filename ) or die $!;
 
-                if ( defined $column->{static} ) {
-                    my $static_value = $column->{static};
-                    $output->{$output_column} = $static_value;
+            my $params = $job->{parameters};
+            my $return = $Import->import_patrons(
+                {
+                    file => $handle,
+                    %$params,
                 }
-                elsif ( defined $column->{input} ) {
-                    my $input_column = $column->{input};
-                    my $value        = $input->{$input_column} // q{};
-                    my $prefix       = $column->{prefix}       // q{};
-                    my $padding      = $column->{padding}      // q{};
-                    my $length       = $column->{length}       // 0;
+            );
 
-                    my $padding_length = $length - length($prefix) - length($value);
-                    $padding_length = 0 if $padding_length < 0;
-                    $padding = $padding x $padding_length;
+            my $feedback    = $return->{feedback};
+            my $errors      = $return->{errors};
+            my $imported    = $return->{imported};
+            my $overwritten = $return->{overwritten};
+            my $alreadyindb = $return->{already_in_db};
+            my $invalid     = $return->{invalid};
+            my $total = $imported + $alreadyindb + $invalid + $overwritten;
 
-                    $value = $prefix . $padding .$value;
-                    $output->{$output_column} = $value;
-                }
-                elsif ( defined $column->{mapping} ) {
-                    my $mapping = $column->{mapping};
-                    my $source  = $mapping->{source};
-                    my $map     = $mapping->{map};
-
-                    my $input_value = $input->{$source};
-                    my $value       = $map->{$input_value};
-                    $output->{$output_column} = $value;
-                }
-                elsif ( defined $column->{transformer} ) {
-                    my $sub_name = $column->{transformer};
-                    my $sub      = $transformers->{$sub_name};
-                    die "NO TRANSFORMER NAMED $sub_name DEFINED" unless $sub;
-                    &$sub( $input, $output, $stash, $job );
-                }
+            if ($verbose) {
+                say q{};
+                say "Import complete:";
+                say "Imported:    $imported";
+                say "Overwritten: $overwritten";
+                say "Skipped:     $alreadyindb";
+                say "Invalid:     $invalid";
+                say "Total:       $total";
+                say q{};
             }
 
-            $debug && say "OUTPUT: " . Data::Dumper::Dumper($output);
-
-            push( @output_data, $output );
-        }
-
-        my ( $tmp_fh, $tmp_filename ) = tempfile();
-        binmode( $tmp_fh, ":utf8" );
-        my $csv = Text::CSV::Slurp->create( input => \@output_data );
-        print $tmp_fh $csv;
-        close $tmp_fh;
-
-        # Reopen file handle for reading
-        my $handle;
-        open( $handle, "<:encoding(UTF-8)", $tmp_filename ) or die $!;
-
-        my $params = $job->{parameters};
-        my $return = $Import->import_patrons(
-            {
-                file => $handle,
-                %$params,
+            if ( $verbose > 1 ) {
+                say "Errors:";
+                say Data::Dumper::Dumper($errors);
             }
-        );
 
-        my $feedback    = $return->{feedback};
-        my $errors      = $return->{errors};
-        my $imported    = $return->{imported};
-        my $overwritten = $return->{overwritten};
-        my $alreadyindb = $return->{already_in_db};
-        my $invalid     = $return->{invalid};
-        my $total       = $imported + $alreadyindb + $invalid + $overwritten;
+            if ( $verbose > 2 ) {
+                say "Feedback:";
+                say Data::Dumper::Dumper($feedback);
+            }
 
-        if ($verbose) {
-            say q{};
-            say "Import complete:";
-            say "Imported:    $imported";
-            say "Overwritten: $overwritten";
-            say "Skipped:     $alreadyindb";
-            say "Invalid:     $invalid";
-            say "Total:       $total";
-            say q{};
-        }
-
-        if ( $verbose > 1 ) {
-            say "Errors:";
-            say Data::Dumper::Dumper($errors);
-        }
-
-        if ( $verbose > 2 ) {
-            say "Feedback:";
-            say Data::Dumper::Dumper($feedback);
-        }
-
+        } catch {
+            say "JOB $job->{name} FAILED WITH THE ERROR: $_";
+        };
     }
 }
 
