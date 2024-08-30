@@ -229,6 +229,7 @@ sub cronjob_nightly {
         # Write a header if needed
         if ( my $header = $job->{file}->{header} ) {
             my ( $new_tmp_fh, $new_tmp_filename ) = tempfile();
+            binmode( $new_tmp_fh, ":utf8" );
 
             open my $new, '>:encoding(UTF-8)', $new_tmp_filename
               or die "$new_tmp_filename: $!";
@@ -317,6 +318,7 @@ sub cronjob_nightly {
         }
 
         my ( $tmp_fh, $tmp_filename ) = tempfile();
+        binmode( $tmp_fh, ":utf8" );
         my $csv = Text::CSV::Slurp->create( input => \@output_data );
         print $tmp_fh $csv;
         close $tmp_fh;
