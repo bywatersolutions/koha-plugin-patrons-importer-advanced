@@ -10,6 +10,7 @@ It can support unlimited files with different configurations and allows for rena
   run_on_dow: 1,2,3,4,5 # Sunday (0) through Saturday (6), leave out for daily. List all day numbers separated by commas
   debug: 0      # Enable debugging for development
   verbose: 3    # Gives more verbose output from the Koha patron import process
+  post_import_transformer: my_post_import_transformer # called after the import for a given job is completed
   sftp:
     host: sftp.library.org
     username: admin

@@ -317,7 +317,12 @@ sub cronjob_nightly {
                         my $sub      = $transformers->{$sub_name};
                         die "NO TRANSFORMER NAMED $sub_name DEFINED"
                           unless $sub;
-                        &$sub( $input, $output, $stash, $job );
+
+                        try {
+                            &$sub( $input, $output, $stash, $job );
+                        } catch {
+                            warn "Call to transformer $sub_name failed with errors: $_";
+                        };
                     }
                 }
 
@@ -371,6 +376,19 @@ sub cronjob_nightly {
             if ( $verbose > 2 ) {
                 say "Feedback:";
                 say Data::Dumper::Dumper($feedback);
+            }
+
+            if ( $job->{post_import_transformer} ) {
+                my $sub_name = $job->{post_import_transformer};
+                my $sub      = $transformers->{$sub_name};
+                die "NO TRANSFORMER NAMED $sub_name DEFINED"
+                  unless $sub;
+
+                try {
+                    &$sub( \@output_data, $job );
+                } catch {
+                    warn "Call to transformer $sub_name failed with errors: $_";
+                };
             }
 
         } catch {
