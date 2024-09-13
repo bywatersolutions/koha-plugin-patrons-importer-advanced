@@ -7,6 +7,7 @@ use Modern::Perl;
 use base qw(Koha::Plugins::Base);
 
 use C4::Context;
+use C4::Log qw(logaction);
 use Koha::Encryption;
 use Koha::Patrons::Import;
 
@@ -99,13 +100,14 @@ sub configure {
         $self->output_html( $template->output() );
     }
     else {
-        $self->store_data(
-            {
-                configuration => Koha::Encryption->new->encrypt_hex(
-                    $cgi->param('configuration')
-                ),
-            }
-        );
+        my $encrypted =
+          Koha::Encryption->new->encrypt_hex( $cgi->param('configuration') );
+
+        $self->store_data( { configuration => $encrypted } );
+
+        C4::Log::logaction( 'SYSTEMPREFERENCE', 'MODIFY', undef,
+            "PatronsImporterAdvanced: $encrypted" );
+
         $self->go_home();
     }
 }
