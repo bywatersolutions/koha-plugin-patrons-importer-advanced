@@ -8,6 +8,7 @@ use base qw(Koha::Plugins::Base);
 
 use C4::Context;
 use C4::Log qw(logaction);
+use Koha::Email;
 use Koha::Encryption;
 use Koha::Patrons::Import;
 
@@ -368,6 +369,26 @@ sub cronjob_nightly {
                 say "Invalid:     $invalid";
                 say "Total:       $total";
                 say q{};
+            }
+
+            if ( my $email_conf = $job->{email_results} ) {
+
+                $email_conf->{text_body} = qq{
+Import complete for $job->{name}:
+Imported:    $imported
+Overwritten: $overwritten
+Skipped:     $alreadyindb
+Invalid:     $invalid
+Total:       $total
+                };
+
+                my $email = Koha::Email->create($email_conf);
+
+                try {
+                    $email->send_or_die();
+                } catch {
+                    warn "ERROR: Failed to send email for job $job->{name}: $_";
+                }
             }
 
             if ( $verbose > 1 ) {

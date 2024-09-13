@@ -64,6 +64,14 @@ It can support unlimited files with different configurations and allows for rena
       - "9"
       - "71"
       - "106"
+  skip_incoming: # If the incoming file row has a column with this name and a matching value, that row will not be imported as a patron:
+  send_email: # Optional, email results
+    subject: Your library's import results
+    from: me@example.com
+    to: you@example.com
+    cc: him@example.com
+    bcc: her@example.com
+    reply_to: them@example.com
 ```
 
 The transformers are stored within the `config` block of the Koha configuration file:
