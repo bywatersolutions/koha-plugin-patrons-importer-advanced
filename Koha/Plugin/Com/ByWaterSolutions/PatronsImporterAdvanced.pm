@@ -125,7 +125,7 @@ sub get_sftp {
         user     => $sftp_username,
         port     => 22,
         password => $sftp_password,
-        timeout  => 5, # seconds
+        timeout  => 5,                # seconds
     );
     $sftp->die_on_error( "Patrons Importer - "
           . "SFTP ERROR: Unable to establish SFTP connection for "
@@ -266,7 +266,9 @@ sub cronjob_nightly {
                 foreach my $input_column ( keys %{ $job->{skip_incoming} } ) {
                     my $values = $job->{skip_incoming}->{$input_column};
                     foreach my $value (@$values) {
-                        if ( defined $input->{$input_column} && $input->{$input_column} eq $value ) {
+                        if ( defined $input->{$input_column}
+                            && $input->{$input_column} eq $value )
+                        {
                             $debug
                               && say
 "SKIPPING: Row has column '$input_column' value of $value, skipping!";
@@ -323,8 +325,10 @@ sub cronjob_nightly {
 
                         try {
                             &$sub( $input, $output, $stash, $job );
-                        } catch {
-                            warn "Call to transformer $sub_name failed with errors: $_";
+                        }
+                        catch {
+                            warn
+"Call to transformer $sub_name failed with errors: $_";
                         };
                     }
                 }
@@ -336,24 +340,33 @@ sub cronjob_nightly {
 
                     my $deleted = 0;
 
-                    foreach my $c ( @$criteria ) {
-                        my $field = $c->{field};
-                        my $value = $c->{value};
+                    foreach my $c (@$criteria) {
+                        my $field      = $c->{field};
+                        my $value      = $c->{value};
                         my $comparison = $c->{comparison};
 
-                        next unless defined( $field ) && defined(  $value ) && defined( $comparison );
+                        next
+                          unless defined($field)
+                          && defined($value)
+                          && defined($comparison);
 
-                        if ( $comparison eq 'equals' } {
-                            $deleted = 1 if defined(  $output->{$field} ) && $output->{$field} eq $value; 
-                        } elsif ( $comparison eq 'equals' } {
-                            $deleted = 1 if defined(  $output->{$field} ) && $output->{$field} ne $value; 
+                        if ( $comparison eq 'equals' ) {
+                            $deleted = 1
+                              if defined( $output->{$field} )
+                              && $output->{$field} eq $value;
+                        }
+                        elsif ( $comparison eq 'equals' ) {
+                            $deleted = 1
+                              if defined( $output->{$field} )
+                              && $output->{$field} ne $value;
                         }
 
                         last if $deleted;
                     }
 
                     delete_if_found( $output, $job ) if $deleted;
-                } else {
+                }
+                else {
                     push( @output_data, $output );
                 }
             }
@@ -410,7 +423,8 @@ Total:       $total
 
                 try {
                     $email->send_or_die();
-                } catch {
+                }
+                catch {
                     warn "ERROR: Failed to send email for job $job->{name}: $_";
                 }
             }
@@ -433,12 +447,14 @@ Total:       $total
 
                 try {
                     &$sub( \@output_data, $job );
-                } catch {
+                }
+                catch {
                     warn "Call to transformer $sub_name failed with errors: $_";
                 };
             }
 
-        } catch {
+        }
+        catch {
             say "JOB $job->{name} FAILED WITH THE ERROR: $_";
         };
     }
@@ -490,15 +506,16 @@ sub delete_if_found {
     my ( $job, $output ) = @_;
 
     my $matchpoint = $job->{parameters}->{matchpoint};
-    my $value = $output->{$matchpoint};
+    my $value      = $output->{$matchpoint};
 
     return unless $matchpoint && $value;
 
-    my $patron = Koha::Patrons->find( { $matchpoint => $output->{$matchpoint} } );
+    my $patron =
+      Koha::Patrons->find( { $matchpoint => $output->{$matchpoint} } );
 
-    if ( $patron ) {
-                $patron->move_to_deleted();
-                $patron->delete();
+    if ($patron) {
+        $patron->move_to_deleted();
+        $patron->delete();
     }
 }
 
