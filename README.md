@@ -41,6 +41,13 @@ It can support unlimited files with different configurations and allows for rena
     dry_run: 0
   csv_options:  # These values will be passed to Text::CSV
     sep_char: "\t"
+  delete_incoming: # If existing patron matches the matchpoint criteria and the incoming data ( after transformations ) matches any of the delete_incoming criteria the patron will be deleted
+     - field: "sort1"
+       value: "1"
+       comparison: "equals"
+     - field: "sort2"
+       value: "1"
+       comparison: "not_equals"
   columns:      # These are the output file column definitions
     - output: branchcode # Static output will just put the "static" value in the column
       static: ERU

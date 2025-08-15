@@ -331,7 +331,31 @@ sub cronjob_nightly {
 
                 $debug && say "OUTPUT: " . Data::Dumper::Dumper($output);
 
-                push( @output_data, $output );
+                if ( $job->{delete_incoming} ) {
+                    my $criteria = $job->{delete_incoming};
+
+                    my $deleted = 0;
+
+                    foreach my $c ( @$criteria ) {
+                        my $field = $c->{field};
+                        my $value = $c->{value};
+                        my $comparison = $c->{comparison};
+
+                        next unless defined( $field ) && defined(  $value ) && defined( $comparison );
+
+                        if ( $comparison eq 'equals' } {
+                            $deleted = 1 if defined(  $output->{$field} ) && $output->{$field} eq $value; 
+                        } elsif ( $comparison eq 'equals' } {
+                            $deleted = 1 if defined(  $output->{$field} ) && $output->{$field} ne $value; 
+                        }
+
+                        last if $deleted;
+                    }
+
+                    delete_if_found( $output, $job ) if $deleted;
+                } else {
+                    push( @output_data, $output );
+                }
             }
 
             my ( $tmp_fh, $tmp_filename ) = tempfile();
@@ -456,10 +480,26 @@ after ourselves!
 
 =cut
 
-sub uninstall() {
+sub uninstall {
     my ( $self, $args ) = @_;
 
     return 1;
+}
+
+sub delete_if_found {
+    my ( $job, $output ) = @_;
+
+    my $matchpoint = $job->{parameters}->{matchpoint};
+    my $value = $output->{$matchpoint};
+
+    return unless $matchpoint && $value;
+
+    my $patron = Koha::Patrons->find( { $matchpoint => $output->{$matchpoint} } );
+
+    if ( $patron ) {
+                $patron->move_to_deleted();
+                $patron->delete();
+    }
 }
 
 1;
