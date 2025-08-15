@@ -361,6 +361,10 @@ sub cronjob_nightly {
                               && $output->{$field} ne $value;
                         }
 
+                        say "DELETING $output->{cardnumber} BECAUSE "
+                          . Data::Dumper::Dumper($c)
+                          if $verbose;
+
                         last if $deleted;
                     }
 
@@ -505,6 +509,9 @@ sub uninstall {
 sub delete_if_found {
     my ( $job, $output ) = @_;
 
+    my $debug   = $job->{debug}   || 0;
+    my $verbose = $job->{verbose} || 0;
+
     my $matchpoint = $job->{parameters}->{matchpoint};
     my $value      = $output->{$matchpoint};
 
@@ -514,8 +521,16 @@ sub delete_if_found {
       Koha::Patrons->find( { $matchpoint => $output->{$matchpoint} } );
 
     if ($patron) {
+        say "MATCHING PATRON TO DELETE FOUND FOR "
+          . "$matchpoint => $output->{$matchpoint}"
+          if $verbose;
         $patron->move_to_deleted();
         $patron->delete();
+    }
+    else {
+        say "NO MATCHING PATRON TO DELETE FOUND FOR "
+          . "$matchpoint => $output->{$matchpoint}"
+          if $verbose > 1;
     }
 }
 
