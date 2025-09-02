@@ -339,7 +339,7 @@ sub cronjob_nightly {
                 if ( $job->{delete_incoming} ) {
                     my $criteria = $job->{delete_incoming};
 
-                    my $deleted = 0;
+                    my $delete = 0;
 
                     foreach my $c (@$criteria) {
                         my $field      = $c->{field};
@@ -352,24 +352,29 @@ sub cronjob_nightly {
                           && defined($comparison);
 
                         if ( $comparison eq 'equals' ) {
-                            $deleted = 1
+                            $delete = 1
                               if defined( $output->{$field} )
                               && $output->{$field} eq $value;
                         }
-                        elsif ( $comparison eq 'equals' ) {
-                            $deleted = 1
+                        elsif ( $comparison eq 'not_equals' ) {
+                            $delete = 1
                               if defined( $output->{$field} )
                               && $output->{$field} ne $value;
                         }
 
                         say "DELETING $output->{cardnumber} BECAUSE "
                           . Data::Dumper::Dumper($c)
-                          if $verbose;
+                          if $delete && $verbose;
 
-                        last if $deleted;
+                        if ($delete) {
+                            delete_if_found( $output, $job );
+                        }
+                        else {
+                            push( @output_data, $output );
+                        }
                     }
 
-                    delete_if_found( $output, $job ) if $deleted;
+                    delete_if_found( $output, $job ) if $delete;
                 }
                 else {
                     push( @output_data, $output );
