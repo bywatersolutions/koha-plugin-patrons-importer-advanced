@@ -119,13 +119,14 @@ sub get_sftp {
     my $sftp_username = $job->{sftp}->{username};
     my $sftp_password = $job->{sftp}->{password};
     my $sftp_dir      = $job->{sftp}->{directory};
+    my $sftp_port     = $job->{sftp}->{port};
 
     my $sftp = Net::SFTP::Foreign->new(
         host     => $sftp_host,
         user     => $sftp_username,
-        port     => 22,
+        port     => $sftp_port || 22,
         password => $sftp_password,
-        timeout  => 5,                # seconds
+        timeout  => 5,                  # seconds
     );
     $sftp->die_on_error( "Patrons Importer - "
           . "SFTP ERROR: Unable to establish SFTP connection for "
