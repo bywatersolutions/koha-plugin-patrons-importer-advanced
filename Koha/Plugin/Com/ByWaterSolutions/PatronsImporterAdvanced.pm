@@ -11,6 +11,7 @@ use C4::Log qw(logaction);
 use Koha::Email;
 use Koha::Encryption;
 use Koha::Patrons::Import;
+use Koha::TemplateUtils qw(process_tt);
 
 use Data::Dumper;
 use File::Temp qw(tempdir tempfile);
@@ -232,7 +233,7 @@ sub cronjob_nightly {
                   . $sftp->error;
             }
 
-            my $filepath = "$directory/$filename";
+            my $filepath = process_tt("$directory/$filename");
 
             # Write a header if needed
             if ( my $header = $job->{file}->{header} ) {

@@ -15,11 +15,11 @@ It can support unlimited files with different configurations and allows for rena
     host: sftp.library.org
     username: admin
     password: secret
-    directory: /my/dir
-    filename: myfile.txt
+    directory: /my/dir # Can be template toolkit markup, e.g. `[% USE date %][% "STUDENTS_${ date.format(date.now, '%Y%m%d') }.csv" %]`
+    filename: myfile.txt # Can be template toolkit markup
   local:        # If a local file is set, sftp settings will be ignored
-    directory: /kohadevbox/koha
-    filename: ERU_student_data.txt
+    directory: /kohadevbox/koha # Can be template toolkit markup
+    filename: ERU_student_data.txt # Can be template toolkit markup
   file: # If the file you are ingesting has no header, you can inject one
     header: Last Name|First Name|Middle Name|Date of Birth|Level|Email|Phone|Address 1|Address 2|City|State|Zip|Enrollment Status
   parameters:   # These values will be passed directly to Koha::Patrons::Import::import_patrons, along with the file generated
