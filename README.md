@@ -3,6 +3,7 @@
 This plugin will automatically download patron CSV files and import them into Koha.
 It can support unlimited files with different configurations and allows for renaming columns, mapping data and transformations via custom subroutines.
 
+## Annotated configuration
 ```yaml
 ---
 - name: EXAMPLE # Everything can have a name label, it doesn't actually do anything but can be helpful to have
@@ -73,6 +74,118 @@ It can support unlimited files with different configurations and allows for rena
       - "106"
   skip_incoming: # If the incoming file row has a column with this name and a matching value, that row will not be imported as a patron:
   send_email: # Optional, email results
+    subject: Your library's import results
+    from: me@example.com
+    to: you@example.com
+    cc: him@example.com
+    bcc: her@example.com
+    reply_to: them@example.com
+```
+
+The transformers are stored within the `config` block of the Koha configuration file:
+```xml
+ <patrons_importer_advanced>
+    <transformers>
+        <dob>
+            sub {
+              my ( $input_hash, $output_hash, $stash ) = @_;
+              my ( $month, $day, $year ) = split( '/', $input_hash->{"Date of Birth"} );
+              $output_hash->{dateofbirth} = "$year-$month-$day";
+            };
+        </dob>
+        <phone>
+            sub {
+              my ( $input_hash, $output_hash, $stash, $job ) = @_;
+              my $phone = $input_hash->{"Cell Phone"} || $input_hash->{"Phone"};
+              $phone =~ s/\D//g;
+              $output_hash->{phone} = $phone;
+            };
+        </phone>
+        <pin>
+            sub {
+              my ( $input_hash, $output_hash, $stash, $job ) = @_;
+              require Koha::Patrons;
+              my $count = Koha::Patrons->count({ cardnumber => $output_hash->{cardnumber} });
+              if ( !$count || $job->{force_generate_pin} ) {
+               my $pin = 1000 + int(rand(8999));
+               $output_hash->{patron_attributes} = "PIN:$pin";
+              }
+            };
+        </pin>
+    </transformers>
+ </patrons_importer_advanced>
+ ```
+
+## Raw config ( copy and paste as a starter template )
+```yaml
+---
+- name: EXAMPLE 
+  disable: 0
+  run_on_dow: 1,2,3,4,5 
+  debug: 0
+  verbose: 3
+  post_import_transformer: my_post_import_transformer
+  sftp:
+    host: sftp.library.org
+    username: admin
+    password: secret
+    directory: /my/dir 
+    filename: myfile.txt
+  local:
+    directory: /kohadevbox/koha
+    filename: ERU_student_data.txt
+  file:
+    header: Last Name|First Name|Middle Name|Date of Birth|Level|Email|Phone|Address 1|Address 2|City|State|Zip|Enrollment Status
+  parameters:
+    matchpoint: cardnumber
+    preserve_extended_attributes: 1
+    defaults:
+      dateexpiry: 2099-01-01
+      privacy: 1
+    preserve_fields:
+      - dateenrolled
+      - password_expiration_date
+      - fax
+    overwrite_cardnumber: 1
+    overwrite_passwords: 0
+    update_dateexpiry: 1
+    update_dateexpiry_from_today: 1
+    update_dateexpiry_from_existing: 0
+    send_welcome: 0
+    dry_run: 0
+  csv_options:
+    sep_char: "\t"
+  delete_incoming:
+     - field: "sort1"
+       value: "1"
+       comparison: "equals"
+     - field: "sort2"
+       value: "1"
+       comparison: "not_equals"
+  columns:
+    - output: branchcode
+      static: ERU
+    - output: surname 
+      input: "Last Name"
+      prefix: 1234
+      padding: "0"
+      length: 14       
+    - name: Phone Number
+      transformer: myTransformer
+    - output: categorycode
+      mapping:
+        source: studentgrade
+        map:
+          "1": GRADESCHOOL
+          "7": MIDDLESCHOOL
+          "12": HIGHSCHOOL
+          "K": GRADESCHOOL
+  skip_incoming:
+    "Some Column":
+      - "9"
+      - "71"
+      - "106"
+  send_email:
     subject: Your library's import results
     from: me@example.com
     to: you@example.com
