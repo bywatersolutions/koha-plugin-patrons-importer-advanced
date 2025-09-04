@@ -15,7 +15,7 @@ It can support unlimited files with different configurations and allows for rena
     host: sftp.library.org
     username: admin
     password: secret
-    directory: /my/dir # Can be template toolkit markup, e.g. `[% USE date %][% "STUDENTS_${ date.format(date.now, '%Y%m%d') }.csv" %]`
+    directory: /my/dir # Can be template toolkit markup, e.g. `"[% USE date %]CCC_STUDENTS_[% date.format(date.now, '%Y%m%d') %].csv"`
     filename: myfile.txt # Can be template toolkit markup
   local:        # If a local file is set, sftp settings will be ignored
     directory: /kohadevbox/koha # Can be template toolkit markup
