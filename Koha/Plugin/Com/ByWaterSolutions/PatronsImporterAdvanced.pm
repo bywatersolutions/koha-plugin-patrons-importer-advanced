@@ -105,10 +105,10 @@ sub configure {
     else {
         # Log previous configuration, redact sftp password
         my $current_configuration = $self->get_configuration();
-        $current_configuration->{sftp}->{password} = "*****"
+        $current_configuration->{sftp}->{password} = "*****";
         my $current_yaml = YAML::XS::Dump($current_configuration);
         my $new_configuration = $cgi->param('configuration');
-        $new_configuration->{sftp}->{password} = "*****"
+        $new_configuration->{sftp}->{password} = "*****";
         my $new_yaml = YAML::XS::Dump($new_configuration);
         logaction("PatronsImporterAdvanced", "ChangeConfiguration", "", $new_yaml, "", $current_yaml);
 
