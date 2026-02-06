@@ -18,6 +18,7 @@ use File::Temp qw(tempdir tempfile);
 use Net::SFTP::Foreign;
 use Text::CSV::Slurp;
 use Try::Tiny;
+use YAML::XS qw(Load Dump);
 
 ## Here we set our plugin version
 our $VERSION         = "{VERSION}";
@@ -102,6 +103,16 @@ sub configure {
         $self->output_html( $template->output() );
     }
     else {
+        # Log previous configuration, redact sftp password
+        my $current_configuration = $self->get_configuration();
+        $current_configuration->{sftp}->{password} = "*****"
+        my $current_yaml = YAML::XS::Dump($current_configuration);
+        my $new_configuration = $cgi->param('configuration');
+        $new_configuration->{sftp}->{password} = "*****"
+        my $new_yaml = YAML::XS::Dump($new_configuration);
+        logaction("PatronsImporterAdvanced", "ChangeConfiguration", "", $new_yaml, "", $current_yaml);
+
+
         my $encrypted =
           Koha::Encryption->new->encrypt_hex( $cgi->param('configuration') );
 
