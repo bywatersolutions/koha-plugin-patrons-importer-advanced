@@ -8,6 +8,7 @@ use base qw(Koha::Plugins::Base);
 
 use C4::Context;
 use C4::Log qw(logaction);
+use Koha::Config;
 use Koha::Email;
 use Koha::Encryption;
 use Koha::Patrons::Import;
@@ -18,6 +19,7 @@ use File::Temp qw(tempdir tempfile);
 use Net::SFTP::Foreign;
 use Text::CSV::Slurp;
 use Try::Tiny;
+use XML::Simple;
 use YAML::XS qw(Load Dump);
 
 ## Here we set our plugin version
@@ -183,11 +185,17 @@ sub cronjob_nightly {
     my $Import = Koha::Patrons::Import->new();
 
     # Load transformation subroutines from kaho-conf.xml
-    my $koha_conf_data = C4::Context->config("patrons_importer_advanced");
+    my $conf_file = Koha::Config->guess_koha_conf;
+    my $xml = XMLin($conf_file,
+        ForceContent => 1,
+        ContentKey   => '-content'
+    );
+
+    my $koha_conf_data = $xml->{config}->{patrons_importer_advanced};
     my $transformers   = $koha_conf_data->{transformers};
     if ($transformers) {
         foreach my $sub_name ( keys %$transformers ) {
-            my $code   = $transformers->{$sub_name};
+            my $code   = $transformers->{$sub_name}->{content};
             my $subref = eval $code;
             die "ERROR IN $sub_name: $@" if $@;
             $transformers->{$sub_name} = $subref;

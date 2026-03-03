@@ -87,21 +87,26 @@ The transformers are stored within the `config` block of the Koha configuration 
  <patrons_importer_advanced>
     <transformers>
         <dob>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash ) = @_;
               my ( $month, $day, $year ) = split( '/', $input_hash->{"Date of Birth"} );
               $output_hash->{dateofbirth} = "$year-$month-$day";
             };
+          ]]>
         </dob>
         <phone>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash, $job ) = @_;
               my $phone = $input_hash->{"Cell Phone"} || $input_hash->{"Phone"};
               $phone =~ s/\D//g;
               $output_hash->{phone} = $phone;
             };
+          ]]>
         </phone>
         <pin>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash, $job ) = @_;
               require Koha::Patrons;
@@ -111,6 +116,7 @@ The transformers are stored within the `config` block of the Koha configuration 
                $output_hash->{patron_attributes} = "PIN:$pin";
               }
             };
+          ]]>
         </pin>
     </transformers>
  </patrons_importer_advanced>
@@ -199,21 +205,26 @@ The transformers are stored within the `config` block of the Koha configuration 
  <patrons_importer_advanced>
     <transformers>
         <dob>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash ) = @_;
               my ( $month, $day, $year ) = split( '/', $input_hash->{"Date of Birth"} );
               $output_hash->{dateofbirth} = "$year-$month-$day";
             };
+          ]]>
         </dob>
         <phone>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash, $job ) = @_;
               my $phone = $input_hash->{"Cell Phone"} || $input_hash->{"Phone"};
               $phone =~ s/\D//g;
               $output_hash->{phone} = $phone;
             };
+          ]]>
         </phone>
         <pin>
+          <![CDATA[
             sub {
               my ( $input_hash, $output_hash, $stash, $job ) = @_;
               require Koha::Patrons;
@@ -223,10 +234,12 @@ The transformers are stored within the `config` block of the Koha configuration 
                $output_hash->{patron_attributes} = "PIN:$pin";
               }
             };
+          ]]>
         </pin>
     </transformers>
  </patrons_importer_advanced>
  ```
+The Perl code is wrapped in CDATA sections to avoid the need to encode the Perl code as to not break the XML encoding.
 
 # Downloading
 
