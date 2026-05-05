@@ -20,6 +20,7 @@ use Net::SFTP::Foreign;
 use Text::CSV::Slurp;
 use Try::Tiny;
 use XML::Simple;
+use XML::Simple qw( XMLin );
 use YAML::XS qw(Load Dump);
 
 ## Here we set our plugin version
@@ -186,16 +187,17 @@ sub cronjob_nightly {
 
     # Load transformation subroutines from kaho-conf.xml
     my $conf_file = Koha::Config->guess_koha_conf;
-    my $xml = XMLin($conf_file,
-        ForceContent => 1,
-        ContentKey   => '-content'
+    my $xml       = XMLin(
+        $conf_file,
+        ForceArray    => 0,
+        SuppressEmpty => undef,
     );
 
     my $koha_conf_data = $xml->{config}->{patrons_importer_advanced};
     my $transformers   = $koha_conf_data->{transformers};
     if ($transformers) {
         foreach my $sub_name ( keys %$transformers ) {
-            my $code   = $transformers->{$sub_name}->{content};
+            my $code   = $transformers->{$sub_name};
             my $subref = eval $code;
             die "ERROR IN $sub_name: $@" if $@;
             $transformers->{$sub_name} = $subref;
