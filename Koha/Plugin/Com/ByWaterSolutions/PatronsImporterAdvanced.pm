@@ -106,13 +106,13 @@ sub configure {
         $self->output_html( $template->output() );
     }
     else {
-        # Log previous configuration, redact sftp password
-        my $current_configuration = $self->get_configuration();
-        $current_configuration->{sftp}->{password} = "*****";
-        my $current_yaml = YAML::XS::Dump($current_configuration);
-        my $new_configuration = $cgi->param('configuration');
-        $new_configuration->{sftp}->{password} = "*****";
-        my $new_yaml = YAML::XS::Dump($new_configuration);
+        # Log previous configuration, redact sftp passwords
+        my $current_configuration = eval { $self->get_configuration() };
+        my $current_yaml          = _redacted_yaml($current_configuration);
+        my $new_configuration     = eval {
+            YAML::XS::Load( Encode::encode_utf8( scalar $cgi->param('configuration') ) );
+        };
+        my $new_yaml = _redacted_yaml($new_configuration);
         logaction("PatronsImporterAdvanced", "ChangeConfiguration", "", $new_yaml, "", $current_yaml);
 
 
@@ -126,6 +126,20 @@ sub configure {
 
         $self->go_home();
     }
+}
+
+sub _redacted_yaml {
+    my ($configuration) = @_;
+
+    return "" unless $configuration;
+
+    # The configuration is a list of jobs, each with its own sftp credentials
+    $configuration = [$configuration] unless ref $configuration eq 'ARRAY';
+    foreach my $job (@$configuration) {
+        $job->{sftp}->{password} = "*****" if ref $job eq 'HASH' && $job->{sftp};
+    }
+
+    return YAML::XS::Dump($configuration);
 }
 
 sub get_sftp {
