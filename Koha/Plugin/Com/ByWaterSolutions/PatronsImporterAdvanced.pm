@@ -11,6 +11,7 @@ use C4::Log qw(logaction);
 use Koha::Config;
 use Koha::Email;
 use Koha::Encryption;
+use Koha::File::Transport;
 use Koha::File::Transports;
 use Koha::Patrons::Import;
 use Koha::TemplateUtils qw(process_tt);
@@ -73,6 +74,18 @@ sub configure {
         if ( $cgi->param('sync') ) {
             $self->cronjob_nightly( { send_sync_report => 1 } );
             $template->param( sync_report_ran => 1, );
+        }
+
+        if ( $cgi->param('migrate') ) {
+            try {
+                $template->param(
+                    migration           => $self->migrate_sftp_to_file_transports(),
+                    migration_completed => 1,
+                );
+            }
+            catch {
+                $template->param( migration_error => "$_" );
+            };
         }
 
         try {
@@ -269,6 +282,334 @@ sub _file_transport_errors {
     } grep { $_->type eq 'error' } @{ $transport->object_messages };
 
     return join( '; ', @errors ) || 'unknown error';
+}
+
+=head3 migrate_sftp_to_file_transports
+
+    my $report = $plugin->migrate_sftp_to_file_transports();
+
+Replaces the 'sftp' block of every job with a 'file_transport' block, creating one Koha file
+transport per distinct host, port, username and password. Only the sftp blocks of the stored
+YAML are rewritten, the rest of the text is left as is. Saves the configuration and returns the
+transports with the jobs that now use them. Dies without saving if the YAML text can't be
+matched to the parsed configuration.
+
+=cut
+
+sub migrate_sftp_to_file_transports {
+    my ($self) = @_;
+
+    my $yaml = Koha::Encryption->new->decrypt_hex( $self->retrieve_data('configuration') );
+    my $jobs = $self->get_configuration();
+    die "Patrons Importer - MIGRATION ERROR: the configuration is not a list of jobs"
+      unless ref $jobs eq 'ARRAY';
+
+    # The configuration textarea saves CRLF line endings, keep whatever the configuration uses
+    my $eol   = $yaml =~ /\r\n/ ? "\r\n" : "\n";
+    my @lines = map { s/\r$//r } split( /\n/, $yaml, -1 );
+
+    my $items = _top_level_items( \@lines, scalar @$jobs );
+
+    # Pair each job's sftp settings with its block of text, and make sure the two agree
+    # before anything is created or changed
+    my @sftp_jobs;
+    for my $i ( 0 .. $#$jobs ) {
+        my $job   = $jobs->[$i];
+        my $name  = ref $job eq 'HASH' && defined $job->{name} ? $job->{name} : "#" . ( $i + 1 );
+        my $sftp  = ref $job eq 'HASH' ? $job->{sftp} : undef;
+        my $block = _find_sftp_block( \@lines, $items->[$i], $name );
+        my $mismatch =
+          "Patrons Importer - MIGRATION ERROR: could not match the sftp block for job '$name' "
+          . "to the parsed configuration, migrate it by hand";
+
+        if ( ref $sftp ne 'HASH' ) {
+            die $mismatch if $block;
+            next;
+        }
+        die $mismatch unless $block && _deep_eq( _parse_sftp_block( $block, $name ), $sftp );
+
+        die "Patrons Importer - MIGRATION ERROR: job '$name' has both sftp and file_transport settings, "
+          . "migrate it by hand"
+          if exists $job->{file_transport};
+        foreach my $key (qw(host username password filename)) {
+            die "Patrons Importer - MIGRATION ERROR: job '$name' has no sftp $key"
+              unless defined $sftp->{$key} && length $sftp->{$key};
+        }
+        die "Patrons Importer - MIGRATION ERROR: job '$name' has a non-numeric sftp port"
+          if defined $sftp->{port} && $sftp->{port} !~ /^\d+$/;
+
+        push( @sftp_jobs, { index => $i, name => $name, sftp => $sftp, block => $block } );
+    }
+
+    # Group the jobs by connection, in the order the connections first appear
+    my ( @groups, %group_for );
+    foreach my $sftp_job (@sftp_jobs) {
+        my $sftp = $sftp_job->{sftp};
+        my $key  = join( "\0", $sftp->{host}, $sftp->{port} // 22, $sftp->{username}, $sftp->{password} );
+        unless ( $group_for{$key} ) {
+            $group_for{$key} = { sftp => $sftp, jobs => [] };
+            push( @groups, $group_for{$key} );
+        }
+        push( @{ $group_for{$key}->{jobs} }, $sftp_job );
+    }
+
+    # A directory shared by every job of a group moves to the transport, unless it holds
+    # template toolkit markup, which Koha wouldn't render
+    foreach my $group (@groups) {
+        my @directories      = map { _normalize_dir( $_->{sftp}->{directory} ) } @{ $group->{jobs} };
+        my $common_directory = $directories[0];
+        $common_directory = undef
+          if !defined $common_directory
+          || !length $common_directory
+          || index( $common_directory, '[%' ) != -1
+          || grep { !defined $_ || $_ ne $common_directory } @directories;
+
+        my ( $transport, $created ) = _find_or_create_transport( $group->{sftp}, $common_directory );
+        $group->{transport} = $transport;
+        $group->{created}   = $created;
+    }
+
+    # Rewrite the blocks, from the last one to the first so the earlier line numbers stay valid
+    my ( @report, %expected );
+    foreach my $group (@groups) {
+        my $transport           = $group->{transport};
+        my $transport_directory = _normalize_dir( $transport->download_directory );
+        my @report_jobs;
+
+        foreach my $sftp_job ( @{ $group->{jobs} } ) {
+            my $sftp      = $sftp_job->{sftp};
+            my $directory = $sftp->{directory};
+            my $has_directory     = defined $directory && length $directory;
+            my $directory_dropped = $has_directory
+              && defined $transport_directory
+              && _normalize_dir($directory) eq $transport_directory;
+
+            $sftp_job->{transport_id}      = $transport->id;
+            $sftp_job->{directory_dropped} = $directory_dropped;
+
+            my %expected_block = %$sftp;
+            delete @expected_block{qw(host username password port)};
+            delete $expected_block{directory} if $directory_dropped;
+            $expected_block{id} = $transport->id;
+            $expected{ $sftp_job->{index} } = \%expected_block;
+
+            push( @report_jobs, { name => $sftp_job->{name}, directory_kept => $has_directory && !$directory_dropped ? 1 : 0 } );
+        }
+
+        push( @report, { transport => $transport, created => $group->{created}, jobs => \@report_jobs } );
+    }
+
+    foreach my $sftp_job ( sort { $b->{block}->{start} <=> $a->{block}->{start} } @sftp_jobs ) {
+        my $block = $sftp_job->{block};
+        my @new_lines = (
+            ( ' ' x $block->{indent} ) . 'file_transport:' . ( $block->{trailing_comment} ? " $block->{trailing_comment}" : q{} ),
+            ( ' ' x $block->{child_indent} ) . "id: $sftp_job->{transport_id}",
+        );
+        foreach my $entry ( @{ $block->{entries} } ) {
+            my $key = $entry->{key} // q{};
+            next if $key eq 'host' || $key eq 'username' || $key eq 'password' || $key eq 'port';
+            next if $key eq 'directory' && $sftp_job->{directory_dropped};
+            push( @new_lines, @{ $entry->{lines} } );
+        }
+        splice( @lines, $block->{start}, $block->{end} - $block->{start} + 1, @new_lines );
+    }
+    my $new_yaml = join( $eol, @lines );
+
+    # Make sure the rewritten text parses to the same jobs, with only the sftp blocks changed
+    my $new_jobs = eval { YAML::XS::Load( Encode::encode_utf8($new_yaml) ) };
+    die "Patrons Importer - MIGRATION ERROR: the rewritten configuration is not valid YAML, nothing was saved: $@"
+      unless ref $new_jobs eq 'ARRAY';
+    die "Patrons Importer - MIGRATION ERROR: the rewritten configuration has a different number of jobs, nothing was saved"
+      unless @$new_jobs == @$jobs;
+    for my $i ( 0 .. $#$jobs ) {
+        my %old = ref $jobs->[$i] eq 'HASH'     ? %{ $jobs->[$i] }     : ();
+        my %new = ref $new_jobs->[$i] eq 'HASH' ? %{ $new_jobs->[$i] } : ();
+        my $ok = $expected{$i} ? !exists $new{sftp} && _deep_eq( $new{file_transport}, $expected{$i} ) : 1;
+        delete @old{qw(sftp file_transport)};
+        delete @new{qw(sftp file_transport)};
+        die "Patrons Importer - MIGRATION ERROR: the rewritten configuration differs from the original for job "
+          . ( $i + 1 )
+          . " in more than its sftp block, nothing was saved"
+          unless $ok && _deep_eq( \%old, \%new );
+    }
+
+    $self->save_configuration($new_yaml) if @sftp_jobs;
+
+    return \@report;
+}
+
+# Returns the line range and key indentation of each top level list item, so a job's sftp
+# block can be matched to the job by position rather than by searching the whole text
+sub _top_level_items {
+    my ( $lines, $count ) = @_;
+
+    my ( @items, $indent );
+    for my $i ( 0 .. $#$lines ) {
+        next unless $lines->[$i] =~ /^([ ]*)-(?:([ ]+)\S|$)/;
+        my $dash_indent = length $1;
+        my $spaces      = length( $2 // ' ' );
+        $indent //= $dash_indent;
+        next unless $dash_indent == $indent;
+
+        $items[-1]->{last} = $i - 1 if @items;
+        push( @items, { first => $i, last => $#$lines, key_indent => $dash_indent + 1 + $spaces } );
+    }
+
+    die "Patrons Importer - MIGRATION ERROR: found "
+      . scalar(@items)
+      . " jobs in the configuration text but $count in the parsed configuration, migrate it by hand"
+      unless @items == $count;
+
+    return \@items;
+}
+
+# Returns a job's sftp block split into entries ( a key line plus its continuation lines ),
+# so a whole value can be dropped or kept even when it spans several lines
+sub _find_sftp_block {
+    my ( $lines, $item, $name ) = @_;
+
+    my $key_indent = $item->{key_indent};
+    my @matches    = grep { $lines->[$_] =~ /^[ ]{$key_indent}sftp:[ ]*(?:#.*)?$/ } $item->{first} .. $item->{last};
+    return unless @matches;
+    die "Patrons Importer - MIGRATION ERROR: job '$name' has more than one sftp block, migrate it by hand"
+      if @matches > 1;
+
+    my $start = $matches[0];
+    my ($trailing_comment) = $lines->[$start] =~ /sftp:[ ]*(#.*)$/;
+
+    # The block runs until the next non-blank line that isn't indented deeper than the key
+    my $end = $start;
+    for my $i ( $start + 1 .. $item->{last} ) {
+        next unless $lines->[$i] =~ /\S/;
+        last unless $lines->[$i] =~ /^[ ]{$key_indent}[ ]+\S/;
+        $end = $i;
+    }
+    return unless $end > $start;
+
+    my ($child_indent) = map { /^([ ]*)\S/ ? length $1 : () } @{$lines}[ $start + 1 .. $end ];
+    my $mismatch = "Patrons Importer - MIGRATION ERROR: could not match the sftp block for job '$name' "
+      . "to the parsed configuration, migrate it by hand";
+
+    my @entries;
+    for my $i ( $start + 1 .. $end ) {
+        my $line = $lines->[$i];
+        if ( $line =~ /^[ ]{$child_indent}(\S)/ ) {
+            if ( $1 eq '#' ) {
+                push( @entries, { key => undef, lines => [$line] } );
+            }
+            else {
+                my ( $double, $single, $bare ) = $line =~ /^[ ]*(?:"([^"]*)"|'([^']*)'|([^\s#'"][^:]*?))[ ]*:(?:[ ]|$)/;
+                my $key = $double // $single // $bare;
+                die $mismatch unless defined $key;
+                push( @entries, { key => $key, lines => [$line] } );
+            }
+        }
+        else {
+            die $mismatch unless @entries;
+            push( @{ $entries[-1]->{lines} }, $line );
+        }
+    }
+
+    return {
+        start            => $start,
+        end              => $end,
+        indent           => $key_indent,
+        child_indent     => $child_indent,
+        trailing_comment => $trailing_comment,
+        entries          => \@entries,
+    };
+}
+
+# Parses an sftp block on its own, so it can be compared to the job's parsed settings
+sub _parse_sftp_block {
+    my ( $block, $name ) = @_;
+
+    my @lines = ( 'sftp:', map { @{ $_->{lines} } } @{ $block->{entries} } );
+    my $text  = join( "\n", map { my $l = $_; $l =~ s/^[ ]{$block->{indent}}//; $l } @lines );
+
+    my $data = try { YAML::XS::Load( Encode::encode_utf8($text) ) } catch { undef };
+    die "Patrons Importer - MIGRATION ERROR: could not match the sftp block for job '$name' "
+      . "to the parsed configuration, migrate it by hand"
+      unless ref $data eq 'HASH' && ref $data->{sftp} eq 'HASH';
+
+    return $data->{sftp};
+}
+
+sub _deep_eq {
+    my ( $x, $y ) = @_;
+
+    return 0 if ( ref $x ) ne ( ref $y );
+    if ( ref $x eq 'HASH' ) {
+        return 0 unless keys %$x == keys %$y;
+        return 0 if grep { !exists $y->{$_} || !_deep_eq( $x->{$_}, $y->{$_} ) } keys %$x;
+        return 1;
+    }
+    if ( ref $x eq 'ARRAY' ) {
+        return 0 unless @$x == @$y;
+        return 0 if grep { !_deep_eq( $x->[$_], $y->[$_] ) } 0 .. $#$x;
+        return 1;
+    }
+    return 1 if !defined $x && !defined $y;
+    return 0 if !defined $x || !defined $y;
+    return "$x" eq "$y" ? 1 : 0;
+}
+
+# Koha adds a trailing slash to a transport's download directory when it is stored
+sub _normalize_dir {
+    my ($dir) = @_;
+
+    return unless defined $dir;
+    $dir =~ s{(.)/+$}{$1};
+    return $dir;
+}
+
+sub _transport_name {
+    my ($sftp) = @_;
+
+    my $port = $sftp->{port} // 22;
+    my $base = substr( "$sftp->{username}\@$sftp->{host}" . ( $port == 22 ? q{} : ":$port" ), 0, 75 );
+    my $name = $base;
+    my $n    = 1;
+    $name = $base . ' (' . ++$n . ')' while Koha::File::Transports->search( { name => $name } )->count;
+
+    return $name;
+}
+
+# Reuses an existing transport for the same connection, so running the migration again
+# doesn't create duplicates. Never changes a transport it didn't create.
+sub _find_or_create_transport {
+    my ( $sftp, $common_directory ) = @_;
+
+    my $port       = $sftp->{port} // 22;
+    my $transports = Koha::File::Transports->search(
+        {
+            transport => 'sftp',
+            auth_mode => 'password',
+            host      => $sftp->{host},
+            port      => $port,
+            user_name => $sftp->{username},
+        },
+        { order_by => 'file_transport_id' }
+    );
+    while ( my $transport = $transports->next ) {
+        my $password = try { $transport->plain_text_password } catch { undef };
+        return ( $transport, 0 ) if defined $password && $password eq $sftp->{password};
+    }
+
+    my $transport = Koha::File::Transport->new(
+        {
+            name               => _transport_name($sftp),
+            host               => $sftp->{host},
+            port               => $port,
+            transport          => 'sftp',
+            user_name          => $sftp->{username},
+            password           => $sftp->{password},
+            auth_mode          => 'password',
+            download_directory => $common_directory,
+        }
+    )->store;
+
+    return ( $transport, 1 );
 }
 
 =head3 get_configuration

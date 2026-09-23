@@ -41,6 +41,40 @@
               </div>
             </form>
         [% END %]
+
+        [% IF migration_completed %]
+            [% IF migration.size %]
+                <div class="alert alert-success" role="alert">
+                    Migrated the SFTP settings to file transports and saved the configuration:
+                    <ul>
+                    [% FOREACH t IN migration %]
+                        <li>
+                            [% IF t.created %]Created[% ELSE %]Reused[% END %] file transport '[% t.transport.name | html %]' ( id [% t.transport.id | html %] ) for
+                            [% FOREACH j IN t.jobs %]'[% j.name | html %]'[% IF j.directory_kept %] ( keeps its directory )[% END %][% UNLESS loop.last %], [% END %][% END %]
+                        </li>
+                    [% END %]
+                    </ul>
+                </div>
+            [% ELSE %]
+                <div class="alert alert-info" role="alert">No SFTP settings found to migrate.</div>
+            [% END %]
+        [% ELSIF migration_error %]
+            <div class="alert alert-error" role="alert">
+                Migration failed, the configuration was not changed: <pre>[% migration_error | html %]</pre>
+            </div>
+        [% END %]
+        <form method="post">
+          [% INCLUDE 'csrf-token.inc' %]
+          <input type="hidden" name="op" value="cud-migrate"/>
+          <input type="hidden" name="class" value="[% CLASS %]"/>
+          <input type="hidden" name="method" value="[% METHOD %]"/>
+          <input type="hidden" name="migrate" value="1" />
+          <div class="form-group">
+              <label for="run-migrate-sftp">Migrate SFTP settings to file transports</label>
+              <button type="submit" id="run-migrate-sftp" class="btn btn-default">Migrate</button>
+              <span class="help-block">Creates one Koha file transport per distinct SFTP connection in the configuration below, points the jobs at it and saves the configuration. Safe to run again. Requires Koha 25.11 or later.</span>
+          </div>
+        </form>
       </div>
     </div>
 

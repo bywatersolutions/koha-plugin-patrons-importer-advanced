@@ -96,6 +96,8 @@ Caveats:
 * Key file authentication requires Koha 26.05 or later.
 * On Koha 25.11, a `local` transport ignores the job's `directory` when the transport has its own download directory.
 
+The configuration page has a "Migrate SFTP settings to file transports" button that converts existing `sftp` blocks for you. It creates one file transport per distinct host, port, username and password, named `username@host`, points every job that used that connection at it and saves the configuration. When all the jobs on a connection use the same directory it becomes the transport's download directory, otherwise each job keeps its `directory`. The `filename` always stays in the job. Only the `sftp` blocks are rewritten, comments and everything else are left as they are. The transports can be renamed under Administration > File transports. The migration refuses to touch a configuration it can't match to the parsed settings ( YAML anchors or aliases, flow style `sftp: { ... }` blocks, a job with both `sftp` and `file_transport` ) and says so, and running it again reuses the transports it already created.
+
 The transformers are stored within the `config` block of the Koha configuration file:
 ```xml
  <patrons_importer_advanced>
