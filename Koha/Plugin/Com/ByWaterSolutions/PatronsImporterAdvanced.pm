@@ -119,26 +119,35 @@ sub configure {
         $self->output_html( $template->output() );
     }
     else {
-        # Log previous configuration, redact sftp passwords
-        my $current_configuration = eval { $self->get_configuration() };
-        my $current_yaml          = _redacted_yaml($current_configuration);
-        my $new_configuration     = eval {
-            YAML::XS::Load( Encode::encode_utf8( scalar $cgi->param('configuration') ) );
-        };
-        my $new_yaml = _redacted_yaml($new_configuration);
-        logaction("PatronsImporterAdvanced", "ChangeConfiguration", "", $new_yaml, "", $current_yaml);
-
-
-        my $encrypted =
-          Koha::Encryption->new->encrypt_hex( $cgi->param('configuration') );
-
-        $self->store_data( { configuration => $encrypted } );
-
-        C4::Log::logaction( 'SYSTEMPREFERENCE', 'MODIFY', undef,
-            "PatronsImporterAdvanced: $encrypted" );
-
+        $self->save_configuration( scalar $cgi->param('configuration') );
         $self->go_home();
     }
+}
+
+=head3 save_configuration
+
+Stores the given configuration YAML, encrypted, and logs the change with passwords redacted.
+
+=cut
+
+sub save_configuration {
+    my ( $self, $configuration ) = @_;
+
+    # Log previous configuration, redact sftp passwords
+    my $current_configuration = eval { $self->get_configuration() };
+    my $current_yaml          = _redacted_yaml($current_configuration);
+    my $new_configuration     = eval {
+        YAML::XS::Load( Encode::encode_utf8($configuration) );
+    };
+    my $new_yaml = _redacted_yaml($new_configuration);
+    logaction("PatronsImporterAdvanced", "ChangeConfiguration", "", $new_yaml, "", $current_yaml);
+
+    my $encrypted = Koha::Encryption->new->encrypt_hex($configuration);
+
+    $self->store_data( { configuration => $encrypted } );
+
+    C4::Log::logaction( 'SYSTEMPREFERENCE', 'MODIFY', undef,
+        "PatronsImporterAdvanced: $encrypted" );
 }
 
 sub _redacted_yaml {
