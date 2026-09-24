@@ -9,20 +9,26 @@ use base qw(Koha::Plugins::Base);
 use C4::Context;
 use C4::Log qw(logaction);
 use Koha::Config;
+use Koha::Database;
 use Koha::Email;
 use Koha::Encryption;
+use Koha::File::Transport;
 use Koha::File::Transports;
 use Koha::Patrons::Import;
 use Koha::TemplateUtils qw(process_tt);
 
 use Data::Dumper;
 use File::Temp qw(tempdir tempfile);
-use Net::SFTP::Foreign;
+use Storable qw(dclone);
 use Text::CSV::Slurp;
 use Try::Tiny;
 use XML::Simple;
 use XML::Simple qw( XMLin );
 use YAML::XS qw(Load Dump);
+
+use Digest::SHA qw(sha256_hex);
+use JSON         qw(encode_json decode_json);
+use POSIX        qw(strftime);
 
 ## Here we set our plugin version
 our $VERSION         = "{VERSION}";
@@ -89,28 +95,19 @@ sub configure {
 
             my @results;
             foreach my $job (@$data) {
-                next unless $job->{sftp} || $job->{file_transport};
-
-                my $label =
-                  $job->{file_transport}
-                  ? "file transport for job '" . ( $job->{name} // q{} ) . "'"
-                  : $job->{sftp}->{host};
-
-                my $error;
-                try {
-                    if ( $job->{file_transport} ) {
-                        my $transport = $self->get_file_transport($job);
-                        $label = "file transport '" . $transport->name . "' ( " . $transport->host . " )";
-                        $transport->disconnect;
-                    }
-                    else {
-                        my $sftp = $self->get_sftp($job);
-                    }
+                unless ( $job->{file_transport_id} ) {
+                    push(
+                        @results,
+                        {
+                            job   => $job,
+                            ok    => 0,
+                            error => 'Job has no file_transport_id configured - it will be skipped by the importer',
+                        }
+                    );
+                    next;
                 }
-                catch {
-                    $error = $_;
-                };
-                push( @results, { job => $job, label => $label, error => $error } );
+                my $result = $self->_test_job_transport($job);
+                push( @results, { job => $job, %$result } );
             }
 
             $template->param( results => \@results, test_completed => 1 );
@@ -146,120 +143,131 @@ sub _redacted_yaml {
 
     return "" unless $configuration;
 
-    # The configuration is a list of jobs, each with its own sftp credentials
-    $configuration = [$configuration] unless ref $configuration eq 'ARRAY';
-    foreach my $job (@$configuration) {
+    my $redacted = dclone($configuration);
+    $redacted = [$redacted] unless ref $redacted eq 'ARRAY';
+    foreach my $job (@$redacted) {
         $job->{sftp}->{password} = "*****" if ref $job eq 'HASH' && $job->{sftp};
     }
 
-    return YAML::XS::Dump($configuration);
+    return YAML::XS::Dump($redacted);
 }
 
-sub get_sftp {
-    my ( $self, $job ) = @_;
-    my $sftp_host     = $job->{sftp}->{host};
-    my $sftp_username = $job->{sftp}->{username};
-    my $sftp_password = $job->{sftp}->{password};
-    my $sftp_dir      = defined $job->{sftp}->{directory} ? process_tt( $job->{sftp}->{directory} ) : undef;
-    my $sftp_port     = $job->{sftp}->{port};
+=head3 _migrate_job_transport
 
-    my $sftp = Net::SFTP::Foreign->new(
-        host     => $sftp_host,
-        user     => $sftp_username,
-        port     => $sftp_port || 22,
-        password => $sftp_password,
-        timeout  => 5,                  # seconds
-    );
-    $sftp->die_on_error( "Patrons Importer - "
-          . "SFTP ERROR: Unable to establish SFTP connection for "
-          . Data::Dumper::Dumper( $job->{sftp} ) );
-
-    $sftp->setcwd($sftp_dir)
-      or die "Patrons Importer - SFTP ERROR: unable to change cwd: "
-      . $sftp->error
-      . " - for "
-      . Data::Dumper::Dumper( $job->{sftp} );
-
-    return $sftp;
-}
-
-=head3 get_file_transport
-
-Returns the Koha::File::Transport referenced by a job's 'file_transport' block,
-connected and positioned in the job's directory. Dies if the transport can't be
-found or connected to, or if the directory can't be changed to.
+Given a single job hashref, if it has a legacy C<sftp>, C<local>, or
+C<file_transport> block and no C<file_transport_id> yet, point the job at
+the equivalent C<file_transport_id> and remove the legacy block. C<sftp>/
+C<local> blocks get a brand new C<Koha::File::Transport> row created for
+them; a C<file_transport> block already references an existing one (by id
+or by name), so it's simply resolved and pointed to directly. Idempotent: a
+job that already has C<file_transport_id>, or has none of the three legacy
+blocks, is returned unchanged.
 
 =cut
 
-sub get_file_transport {
+sub _migrate_job_transport {
     my ( $self, $job ) = @_;
-    my $conf = $job->{file_transport};
 
-    die "Patrons Importer - FILE TRANSPORT ERROR: file_transport requires a filename"
-      unless ref $conf eq 'HASH' && defined $conf->{filename} && length $conf->{filename};
+    return $job if $job->{file_transport_id};
 
-    my $transport;
-    if ( $conf->{id} ) {
-        $transport = Koha::File::Transports->find( $conf->{id} );
-        die "Patrons Importer - FILE TRANSPORT ERROR: No file transport found with id $conf->{id}"
-          unless $transport;
+    if ( my $ft = $job->{file_transport} ) {
+        my $transport;
+        if ( $ft->{id} ) {
+            $transport = Koha::File::Transports->find( $ft->{id} );
+            die "Patrons Importer - MIGRATION ERROR: No file transport found with id $ft->{id}"
+              unless $transport;
+        }
+        elsif ( $ft->{name} ) {
+            my $transports = Koha::File::Transports->search( { name => $ft->{name} } );
+            my $count       = $transports->count;
+            die "Patrons Importer - MIGRATION ERROR: No file transport found named '$ft->{name}'"
+              unless $count;
+            die "Patrons Importer - MIGRATION ERROR: $count file transports are named '$ft->{name}', use id instead"
+              if $count > 1;
+            $transport = $transports->next;
+        }
+        else {
+            die "Patrons Importer - MIGRATION ERROR: file_transport requires an id or a name";
+        }
+
+        $job->{file_transport_id} = $transport->file_transport_id;
+        $job->{filename}          = $ft->{filename};
+
+        # The transport's own download_directory is never TT-rendered, but a
+        # job's `path` override always is - so any directory override here,
+        # markup or not, is safe to carry over as `path` unconditionally.
+        $job->{path} = $ft->{directory} if defined $ft->{directory} && length $ft->{directory};
+
+        delete $job->{file_transport};
     }
-    elsif ( $conf->{name} ) {
-        my $transports = Koha::File::Transports->search( { name => $conf->{name} } );
-        my $count      = $transports->count;
-        die "Patrons Importer - FILE TRANSPORT ERROR: No file transport found named '$conf->{name}'"
-          unless $count;
-        die "Patrons Importer - FILE TRANSPORT ERROR: $count file transports are named '$conf->{name}', use id instead"
-          if $count > 1;
-        $transport = $transports->next;
+    elsif ( my $sftp = $job->{sftp} ) {
+        my $transport = Koha::File::Transport->new(
+            {
+                name               => "PatronsImporterAdvanced: " . ( $job->{name} // 'unnamed job' ),
+                transport          => 'sftp',
+                host               => $sftp->{host},
+                port               => $sftp->{port} || 22,
+                user_name          => $sftp->{username},
+                password           => $sftp->{password},
+                auth_mode          => 'password',
+                download_directory => $sftp->{directory},
+            }
+        )->store;
+
+        $job->{file_transport_id} = $transport->id;
+        $job->{filename}          = $sftp->{filename};
+        delete $job->{sftp};
     }
-    else {
-        die "Patrons Importer - FILE TRANSPORT ERROR: file_transport requires an id or a name";
+    elsif ( my $local = $job->{local} ) {
+
+        # Koha::File::Transport never runs Template Toolkit rendering on
+        # download_directory, but the job-level `path` override does get
+        # process_tt'd on every fetch - so a directory containing TT markup
+        # must migrate to the job's own `path` key to keep working.
+        my $directory        = $local->{directory};
+        my $directory_has_tt = defined $directory && $directory =~ /\[%/;
+
+        my $transport = Koha::File::Transport->new(
+            {
+                name               => "PatronsImporterAdvanced: " . ( $job->{name} // 'unnamed job' ),
+                transport          => 'local',
+                auth_mode          => 'noauth',
+                download_directory => $directory_has_tt ? undef : $directory,
+            }
+        )->store;
+
+        $job->{file_transport_id} = $transport->id;
+        $job->{filename}          = $local->{filename};
+        $job->{path}              = $directory if $directory_has_tt;
+        delete $job->{local};
     }
 
-    _file_transport_op( $transport, 'connect', sub { $transport->connect } );
-
-    # The job's directory overrides the transport's download directory
-    my $directory =
-      ( defined $conf->{directory} && length $conf->{directory} )
-      ? process_tt( $conf->{directory} )
-      : $transport->download_directory;
-
-    if ($directory) {
-        _file_transport_op( $transport, "change directory to '$directory'",
-            sub { $transport->change_directory($directory) } );
-    }
-
-    return $transport;
+    return $job;
 }
 
-# Koha 25.11's SFTP transport dies ( missing JSON import ) instead of returning false when
-# an operation fails, but it records the real error on the object first. So run every
-# transport operation in a try block and build the message from the object's error messages.
-sub _file_transport_op {
-    my ( $transport, $description, $code ) = @_;
+=head3 _test_job_transport
 
-    my $exception;
-    my $ok = try { $code->() } catch { $exception = $_; 0 };
-    return 1 if $ok;
+Test the configured file transport for a single job. Returns a hashref with
+C<ok> (boolean) and, on failure, an C<error> string built from the
+transport's recorded messages.
 
-    my $label = sprintf( "'%s' ( #%s, %s://%s )",
-        $transport->name, $transport->id, $transport->transport, $transport->host );
-    my $reason = _file_transport_errors($transport);
-    $reason .= " ( exception: $exception )" if $exception;
+=cut
 
-    die "Patrons Importer - FILE TRANSPORT ERROR: $description failed for file transport $label: $reason";
-}
+sub _test_job_transport {
+    my ( $self, $job ) = @_;
 
-sub _file_transport_errors {
-    my ($transport) = @_;
+    my $transport = Koha::File::Transports->find( $job->{file_transport_id} );
+    return { ok => 0, error => "No such file_transport_id: $job->{file_transport_id}" } unless $transport;
 
-    my @errors = map {
-        my $payload = $_->payload || {};
-        $_->message . ': ' . ( $payload->{error} // 'unknown error' );
-    } grep { $_->type eq 'error' } @{ $transport->object_messages };
+    # Some Koha versions' SFTP transport dies rather than returning false on
+    # failure (e.g. Koha 25.11, missing JSON import) - catch that too, not
+    # just a false return, so a bad connection is reported per-job instead
+    # of crashing the whole "Test connections" button.
+    my $ok = try { $transport->test_connection } catch { 0 };
+    return { ok => 1 } if $ok;
 
-    return join( '; ', @errors ) || 'unknown error';
+    my $error = join( '; ', map { $_->message } @{ $transport->object_messages } );
+    return { ok => 0, error => $error || 'Unknown error' };
 }
 
 =head3 get_configuration
@@ -311,6 +319,8 @@ sub cronjob_nightly {
     }
 
     foreach my $job (@$data) {
+        my $lock_name;
+        my $lock_acquired = 0;
         try {
             next if $job->{disable};
 
@@ -334,49 +344,48 @@ sub cronjob_nightly {
                 }
             }
 
-            my $directory;
-            my $filename;
-
-            if ( $job->{local} ) {
-                $directory = $job->{local}->{directory};
-                $filename  = $job->{local}->{filename};
-                $debug && say "Loading local file from $directory/$filename";
-            }
-            elsif ( $job->{file_transport} ) {
-                $directory = tempdir( CLEANUP => 1 );
-
-                my $transport = $self->get_file_transport($job);
-                $filename = process_tt( $job->{file_transport}->{filename} );
-
-                $debug
-                  && say qq{Downloading '$filename' via file transport '}
-                  . $transport->name
-                  . qq{' to '$directory/$filename'};
-
-                _file_transport_op( $transport, "download of '$filename'",
-                    sub { $transport->download_file( $filename, "$directory/$filename" ) } );
-
-                $transport->disconnect;
-            }
-            elsif ( $job->{sftp} ) {
-                $directory = tempdir( CLEANUP => 1 );
-                $filename  = process_tt( $job->{sftp}->{filename} // q{} );
-
-                my $sftp_dir = defined $job->{sftp}->{directory} ? process_tt( $job->{sftp}->{directory} ) : undef;
-
-                my $sftp = $self->get_sftp($job);
-
-                $debug
-                  && say qq{Downloading '$sftp_dir/$filename' }
-                  . qq{via SFTP to '$directory/$filename'};
-
-                $sftp->get( "$sftp_dir/$filename", "$directory/$filename" )
-                  or die
-"Patrons Importer - SFTP ERROR: get failed for $sftp_dir/$filename :"
-                  . $sftp->error;
+            my $transport_id = $job->{file_transport_id};
+            unless ($transport_id) {
+                say "JOB $job->{name} HAS NO file_transport_id, SKIPPING";
+                next;
             }
 
-            my $filepath = process_tt("$directory/$filename");
+            my $transport = Koha::File::Transports->find($transport_id);
+            unless ($transport) {
+                say "JOB $job->{name} REFERENCES UNKNOWN file_transport_id $transport_id, SKIPPING";
+                next;
+            }
+
+            # Guard against overlapping runs of the same job: frequent
+            # scheduling means two cron ticks can otherwise both pass the
+            # content-hash check before either records its run. MySQL user
+            # lock names are limited to 64 characters, so hash longer ones.
+            $lock_name = "PatronsImporterAdvanced:" . ( $job->{name} // 'unnamed job' );
+            $lock_name = sha256_hex($lock_name) if length($lock_name) > 64;
+            ($lock_acquired) =
+              C4::Context->dbh->selectrow_array( q{SELECT GET_LOCK(?, 0)}, undef, $lock_name );
+            unless ($lock_acquired) {
+                say "JOB $job->{name} IS ALREADY RUNNING IN ANOTHER PROCESS, SKIPPING THIS RUN";
+                next;
+            }
+
+            my $filename    = process_tt( $job->{filename} );
+            my $directory   = tempdir( CLEANUP => 1 );
+            my $local_path  = "$directory/$filename";
+            my $download_opts = $job->{path} ? { path => process_tt( $job->{path} ) } : {};
+
+            $debug && say "Downloading '$filename' via transport #$transport_id to '$local_path'";
+
+            # Some Koha versions' SFTP transport dies rather than returning
+            # false on failure (e.g. Koha 25.11, missing JSON import) -
+            # catch that too, not just a false return, so either failure
+            # mode produces the same informative error below.
+            my $downloaded = try { $transport->download_file( $filename, $local_path, $download_opts ) } catch { 0 };
+            $downloaded
+              or die "Patrons Importer - TRANSPORT ERROR: download failed for $filename: "
+              . join( '; ', map { $_->message } @{ $transport->object_messages } );
+
+            my $filepath = $local_path;
 
             # Write a header if needed
             if ( my $header = $job->{file}->{header} ) {
@@ -393,6 +402,12 @@ sub cronjob_nightly {
                 close $new;
 
                 $filepath = $new_tmp_filename;
+            }
+
+            my $content_hash = $self->_content_hash($filepath);
+            unless ( $self->_job_should_run( $job->{name}, $content_hash ) ) {
+                say "No changes since last run for job $job->{name}, skipping" if $debug || $verbose;
+                next;
             }
 
             my $options = $job->{csv_options} || {};
@@ -562,6 +577,11 @@ sub cronjob_nightly {
                 say q{};
             }
 
+            $self->_record_job_run(
+                $job->{name}, $content_hash,
+                { imported => $imported, overwritten => $overwritten, already_in_db => $alreadyindb, invalid => $invalid }
+            );
+
             if ( my $email_conf = $job->{email_results} ) {
 
                 $email_conf->{text_body} = qq{
@@ -610,6 +630,12 @@ Total:       $total
         }
         catch {
             say "JOB $job->{name} FAILED WITH THE ERROR: $_";
+        }
+        finally {
+            # Always release the lock - success, failure, or skip partway
+            # through - but never release one we did not acquire.
+            C4::Context->dbh->selectrow_array( q{SELECT RELEASE_LOCK(?)}, undef, $lock_name )
+              if $lock_acquired;
         };
     }
 }
@@ -638,6 +664,41 @@ plugin is installed over an existing older version of a plugin
 
 sub upgrade {
     my ( $self, $args ) = @_;
+
+    my $stored = $self->retrieve_data('configuration');
+    return 1 unless $stored;
+
+    my $jobs = eval { $self->get_configuration() };
+    if ($@) {
+        warn "PatronsImporterAdvanced: unable to read stored configuration during upgrade, "
+          . "skipping transport migration: $@";
+        return 1;
+    }
+    return 1 unless $jobs && ref $jobs eq 'ARRAY';
+
+    my $before_yaml = _redacted_yaml($jobs);
+
+    my $changed = 0;
+
+    # Migrate every job's transport in a single transaction so a failure
+    # partway through leaves neither orphan transport rows nor a config
+    # that no longer matches the rows that were created.
+    Koha::Database->new->schema->storage->txn_do(
+        sub {
+            foreach my $job (@$jobs) {
+                next unless ref $job eq 'HASH';
+                next unless $job->{sftp} || $job->{local} || $job->{file_transport};
+                $self->_migrate_job_transport($job);
+                $changed = 1;
+            }
+        }
+    );
+
+    if ($changed) {
+        my $encrypted = Koha::Encryption->new->encrypt_hex( YAML::XS::Dump($jobs) );
+        $self->store_data( { configuration => $encrypted } );
+        logaction( "PatronsImporterAdvanced", "MigrateTransports", "", _redacted_yaml($jobs), "", $before_yaml );
+    }
 
     return 1;
 }
@@ -682,6 +743,78 @@ sub delete_if_found {
           . "$matchpoint => $output->{$matchpoint}"
           if $verbose > 1;
     }
+}
+
+=head3 _content_hash
+
+Return a SHA-256 hex digest of the given file's bytes.
+
+=cut
+
+sub _content_hash {
+    my ( $self, $filepath ) = @_;
+
+    open my $fh, '<:raw', $filepath or die "Cannot open $filepath: $!";
+    local $/;
+    my $content = <$fh>;
+    close $fh;
+
+    return sha256_hex($content);
+}
+
+=head3 _import_log
+
+Return the stored per-job run history (a hashref keyed by job name), decoding
+it from the plugin's C<import_log> data key. Defaults to an empty hashref.
+
+=cut
+
+sub _import_log {
+    my ($self) = @_;
+
+    my $stored = $self->retrieve_data('import_log');
+    return {} unless $stored;
+
+    my $data = eval { decode_json($stored) };
+    return {} if $@;
+    return $data // {};
+}
+
+=head3 _job_should_run
+
+Given a job name and the content hash of its freshly downloaded input file,
+return true if this content is new since the job's last recorded run (i.e.
+the import should proceed), false if it's identical to last time (skip).
+
+=cut
+
+sub _job_should_run {
+    my ( $self, $job_name, $content_hash ) = @_;
+
+    my $log  = $self->_import_log;
+    my $last = $log->{$job_name} or return 1;
+
+    return ( $last->{last_hash} // '' ) ne $content_hash ? 1 : 0;
+}
+
+=head3 _record_job_run
+
+Record that a job ran with the given content hash and result summary, for
+future C<_job_should_run> comparisons.
+
+=cut
+
+sub _record_job_run {
+    my ( $self, $job_name, $content_hash, $summary ) = @_;
+
+    my $log = $self->_import_log;
+    $log->{$job_name} = {
+        last_hash   => $content_hash,
+        last_run_at => strftime( '%Y-%m-%dT%H:%M:%S', localtime ),
+        %$summary,
+    };
+
+    $self->store_data( { import_log => encode_json($log) } );
 }
 
 1;
