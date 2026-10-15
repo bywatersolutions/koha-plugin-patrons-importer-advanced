@@ -1078,6 +1078,14 @@ sub cronjob_nightly {
 
     my $transformers = $self->get_transformers();
 
+    # Problems the configuration page would have refused, or that were saved anyway
+    my $yaml   = Koha::Encryption->new->decrypt_hex( $self->retrieve_data('configuration') );
+    my $result = $self->validate_configuration( $yaml, { transformers => $transformers } );
+    foreach my $error ( @{ $result->{errors} } ) {
+        my @where = ( ( defined $error->{line} ? "line $error->{line}" : () ), ( $error->{location} // () ) );
+        say "CONFIGURATION PROBLEM: " . ( @where ? join( ', ', @where ) . ': ' : q{} ) . $error->{message};
+    }
+
     foreach my $job (@$data) {
         try {
             next if $job->{disable};
