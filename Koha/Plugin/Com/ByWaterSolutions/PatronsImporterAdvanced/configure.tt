@@ -83,6 +83,22 @@
           <h3 class="panel-title">Settings</h3>
         </div>
 
+        [% IF validation_errors %]
+            <div class="alert alert-warning" role="alert">
+                <h4>The configuration was not saved</h4>
+                <ul>
+                [% FOREACH e IN validation_errors %]
+                    <li>[% IF e.line %]Line [% e.line | html %]: [% END %][% IF e.location %][% e.location | html %]: [% END %][% e.message | html %]</li>
+                [% END %]
+                </ul>
+                <p>Fix the problems and save again, or tick "Save anyway" to store the configuration with these problems.</p>
+                <details>
+                    <summary>Columns the patron import accepts</summary>
+                    [% valid_output_columns.join(', ') | html %]
+                </details>
+            </div>
+        [% END %]
+
         <form method="post">
           [% INCLUDE 'csrf-token.inc' %]
           <input type="hidden" name="op" value="cud-save"/>
@@ -94,12 +110,15 @@
             <legend>Configuration</legend>
 
             <div class="form-group">
-              <textarea style="font-family:monospace;" class="form-control" rows="30" id="configuration" name="configuration">[% configuration %]</textarea>
+              <textarea style="font-family:monospace;" class="form-control" rows="30" id="configuration" name="configuration">[% configuration | html %]</textarea>
             </div>
           </fieldset>
 
 
           <button type="submit" class="btn btn-default">Save</button>
+          [% IF validation_errors %]
+              <label class="checkbox-inline"><input type="checkbox" name="save_anyway" value="1" /> Save anyway</label>
+          [% END %]
         </form>
     </div>
 

@@ -20,20 +20,24 @@ use Modern::Perl;
 use FindBin qw($Bin);
 
 BEGIN {
-    unshift( @INC, "$Bin/.." );
+    # The real path, not "$Bin/..": the template check refuses a plugin path with dots in it
+    require Cwd;
+    unshift( @INC, Cwd::abs_path("$Bin/..") );
     unshift( @INC, '/kohadevbox/koha/' );
     unshift( @INC, '/kohadevbox/koha/t/lib/' );
 }
 
-use Test::More tests => 4;
+use Test::More tests => 5;
 use Test::NoWarnings;
 use Test::Exception;
 use Test::MockModule;
 
+use CGI;
 use File::Slurp qw(write_file);
 use File::Temp  qw(tempdir);
 
 use Koha::Database;
+use Koha::Encryption;
 use Koha::File::Transports;
 use Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced;
 
@@ -436,6 +440,76 @@ subtest 'find_file_transport() tests' => sub {
         $plugin->find_file_transport( { file_transport => { name => $transport->name, filename => 'patrons.csv' } } )
     }
     qr/2 file transports are named/, 'Dies for an ambiguous name';
+
+    $schema->storage->txn_rollback;
+};
+
+subtest 'configure() tests' => sub {
+    plan tests => 9;
+
+    $schema->storage->txn_begin;
+
+    t::lib::Mocks::mock_userenv();
+
+    # Rendering the page starts a session, and a database session commits under the test transaction
+    t::lib::Mocks::mock_preference( 'SessionStorage', 'tmp' );
+    my $plugin_module = Test::MockModule->new('Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced');
+    $plugin_module->mock( get_transformers => sub { return {} } );
+
+    my $directory = tempdir( CLEANUP => 1 );
+    my $good      = <<"YAML";
+- name: A
+  parameters:
+    matchpoint: cardnumber
+  columns:
+    - output: surname
+      input: Last Name
+  local:
+    directory: $directory
+    filename: a.csv
+YAML
+    ( my $bad = $good ) =~ s/output: surname/output: nope/;
+
+    # Posts the settings form and returns the plugin with everything it printed
+    my $post = sub {
+        my (%params) = @_;
+        my $cgi = CGI->new( { method => 'configure', save => 1, %params } );
+        my $plugin =
+          Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced->new( { enable_plugins => 1, cgi => $cgi } );
+        my $output = q{};
+        {
+            local *STDOUT;
+            open( STDOUT, '>', \$output ) or die $!;
+            $plugin->configure();
+            close STDOUT;
+        }
+        return ( $plugin, $output );
+    };
+    my $stored = sub {
+        my ($plugin) = @_;
+        my $encrypted = $plugin->retrieve_data('configuration');
+        return $encrypted ? Koha::Encryption->new->decrypt_hex($encrypted) : undef;
+    };
+
+    my $before = $stored->( Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced->new( { enable_plugins => 1 } ) );
+
+    my ( $plugin, $output ) = $post->( configuration => $bad );
+    like( $output, qr/The configuration was not saved/, 'An invalid configuration shows the errors' );
+    like(
+        $output, qr/Line 5: job 1 &quot;A&quot; &gt; column 1 &gt; output: 'nope' is not a column the patron import accepts/,
+        'The error carries its line and location'
+    );
+    like( $output, qr/output: nope/, 'The posted text is shown again' );
+    like( $output, qr/name="save_anyway"/, 'The save anyway box is offered' );
+    is( $stored->($plugin), $before, 'Nothing was stored' );
+
+    ( $plugin, $output ) = $post->( configuration => $bad, save_anyway => 1 );
+    like( $output, qr/Location: .*plugins-home\.pl/, 'Saving anyway goes back to the plugins page' );
+    is( $stored->($plugin), $bad, 'The configuration was stored despite the errors' );
+
+    ( $plugin, $output ) = $post->( configuration => $good );
+    like( $output, qr/Location: .*plugins-home\.pl/, 'A valid configuration goes back to the plugins page' );
+    is( $stored->($plugin), $good, 'The valid configuration was stored' );
 
     $schema->storage->txn_rollback;
 };

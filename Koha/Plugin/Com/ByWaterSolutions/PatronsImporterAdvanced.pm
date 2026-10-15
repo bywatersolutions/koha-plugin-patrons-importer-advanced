@@ -141,8 +141,22 @@ sub configure {
         $self->output_html( $template->output() );
     }
     else {
-        $self->save_configuration( scalar $cgi->param('configuration') );
-        $self->go_home();
+        my $configuration = scalar $cgi->param('configuration');
+        my $result        = $self->validate_configuration($configuration);
+
+        if ( @{ $result->{errors} } && !$cgi->param('save_anyway') ) {
+            my $template = $self->get_template( { file => 'configure.tt' } );
+            $template->param(
+                configuration        => $configuration,
+                validation_errors    => $result->{errors},
+                valid_output_columns => $result->{valid_columns},
+            );
+            $self->output_html( $template->output() );
+        }
+        else {
+            $self->save_configuration($configuration);
+            $self->go_home();
+        }
     }
 }
 
