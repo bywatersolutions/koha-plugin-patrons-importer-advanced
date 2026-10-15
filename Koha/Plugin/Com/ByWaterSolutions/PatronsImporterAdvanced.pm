@@ -13,12 +13,21 @@ use Koha::Email;
 use Koha::Encryption;
 use Koha::File::Transport;
 use Koha::File::Transports;
+use Koha::Libraries;
+use Koha::Patron::Attribute::Types;
+use Koha::Patron::Categories;
 use Koha::Patrons::Import;
 use Koha::TemplateUtils qw(process_tt);
 
+use Koha::Plugin::Com::ByWaterSolutions::PatronsImporterAdvanced::YamlLines
+  qw(outline line_for_path duplicate_keys pointer_segment pointer_segments);
+
 use Data::Dumper;
+use Encode;
 use File::Temp qw(tempdir tempfile);
+use JSON::Validator;
 use Net::SFTP::Foreign;
+use Text::CSV;
 use Text::CSV::Slurp;
 use Try::Tiny;
 use XML::Simple;
@@ -676,6 +685,370 @@ sub get_transformers {
     }
 
     return $transformers;
+}
+
+=head3 validate_configuration
+
+    my $result = $plugin->validate_configuration( $yaml, { transformers => $transformers } );
+
+Checks a configuration YAML text without saving it. Returns { errors => [ { path, line, location, message } ], data => $parsed, valid_columns => [...] }, errors sorted by line.
+
+=cut
+
+sub validate_configuration {
+    my ( $self, $yaml, $options ) = @_;
+    $options //= {};
+
+    my $data = eval { YAML::XS::Load( Encode::encode_utf8( $yaml // q{} ) ) };
+    if ($@) {
+        my $error = "$@";
+        my ($problem) = $error =~ /The problem:\s*(.*?)\s*was found at/s;
+        my ($line)    = $error =~ /line: (\d+)/;
+        $problem //= $error =~ s/^YAML::XS::Load Error:\s*//r =~ s/\s+at \S+ line \d+\.?\s*$//r;
+        return {
+            errors => [ { path => '/', line => $line, location => undef, message => "YAML syntax error: $problem" } ],
+            data   => undef,
+        };
+    }
+
+    my $outline = outline($yaml);
+    my @errors;
+
+    foreach my $duplicate ( @{ duplicate_keys($outline) } ) {
+        my $parent = $duplicate->{path} eq '/' ? q{} : $duplicate->{path};
+        push(
+            @errors,
+            {
+                path    => "$parent/" . pointer_segment( $duplicate->{key} ),
+                message => "Duplicate key '$duplicate->{key}', only the last one is used (first on line $duplicate->{first_line})",
+            }
+        );
+    }
+
+    my $validator = JSON::Validator->new->schema( YAML::XS::Load( $self->mbf_read('configuration_schema.yaml') ) );
+    push( @errors, _schema_errors( $validator->validate($data) ) );
+
+    my $extended     = C4::Context->preference('ExtendedPatronAttributes');
+    my %valid_column = map { $_ => 1 } Koha::Patrons::Import->new->set_column_keys($extended);
+
+    # Without the transformers nothing can be checked against them, so report the load
+    # failure once instead of flagging every transformer column
+    my $transformers = $options->{transformers};
+    unless ($transformers) {
+        $transformers = eval { $self->get_transformers() };
+        if ($@) {
+            my $error = "$@" =~ s/\s+$//r;
+            push( @errors, { path => '/', message => "The transformers in koha-conf.xml could not be loaded: $error" } );
+            $transformers = undef;
+        }
+    }
+
+    my $check_transformer = sub {
+        my ( $name, $path ) = @_;
+        return unless $transformers;
+        return if defined $name && !ref $name && $transformers->{$name};
+        my $defined = %$transformers ? " (defined: " . join( ', ', sort keys %$transformers ) . ")" : q{};
+        push( @errors, { path => $path, message => "No transformer named '" . ( $name // q{} ) . "' is defined in koha-conf.xml$defined" } );
+    };
+
+    my $check_code = sub {
+        my ( $output, $value, $path ) = @_;
+        $value //= q{};
+        if ( $output eq 'categorycode' && !Koha::Patron::Categories->find($value) ) {
+            push( @errors, { path => $path, message => "Patron category '$value' does not exist" } );
+        }
+        elsif ( $output eq 'branchcode' && !Koha::Libraries->find($value) ) {
+            push( @errors, { path => $path, message => "Library '$value' does not exist" } );
+        }
+    };
+
+    my %known_column_key = map { $_ => 1 } qw(output static input prefix padding length mapping transformer name);
+    my %job_line;
+
+    my @jobs = ref $data eq 'ARRAY' ? @$data : ();
+    foreach my $i ( 0 .. $#jobs ) {
+        my $job = $jobs[$i];
+        next unless ref $job eq 'HASH';
+        my $p = "/$i";
+
+        my $name = $job->{name};
+        if ( defined $name && !ref $name ) {
+            if ( exists $job_line{$name} ) {
+                push( @errors, { path => "$p/name", message => "Another job is also named '$name' (line $job_line{$name})" } );
+            }
+            else {
+                $job_line{$name} = line_for_path( $outline, "$p/name" ) // '?';
+            }
+        }
+
+        push( @errors, { path => $p, message => "Job has no file source, add a local, file_transport or sftp block" } )
+          unless grep { ref $job->{$_} eq 'HASH' } qw(local file_transport sftp);
+
+        if ( defined $job->{run_on_dow} && $job->{run_on_dow} !~ /^\s*[0-6](\s*,\s*[0-6])*\s*$/ ) {
+            push(
+                @errors,
+                {
+                    path    => "$p/run_on_dow",
+                    message => "run_on_dow must be weekday numbers separated by commas, Sunday is 0, for example 1,2,3,4,5",
+                }
+            );
+        }
+
+        $check_transformer->( $job->{post_import_transformer}, "$p/post_import_transformer" )
+          if exists $job->{post_import_transformer};
+
+        # A missing filename is already reported by the schema
+        if ( ref $job->{file_transport} eq 'HASH' && defined $job->{file_transport}->{filename} ) {
+            try { $self->find_file_transport($job) }
+            catch {
+                my $message = "$_" =~ s/^Patrons Importer - FILE TRANSPORT ERROR: //r =~ s/\s+at \S+ line \d+\.?\s*$//r;
+                push( @errors, { path => "$p/file_transport", message => $message } );
+            };
+        }
+
+        if ( ref $job->{local} eq 'HASH' && defined $job->{local}->{directory} && !-d $job->{local}->{directory} ) {
+            push(
+                @errors,
+                { path => "$p/local/directory", message => "Directory '$job->{local}->{directory}' does not exist on this server" }
+            );
+        }
+
+        # The same csv options parse the configured header and the file, so a bad option
+        # also means the header can't be checked
+        my $csv_options = ref $job->{csv_options} eq 'HASH' ? $job->{csv_options} : {};
+        my $csv = eval { Text::CSV->new( { binary => 1, %$csv_options } ) };
+        unless ($csv) {
+            my $reason = $@ ? "$@" =~ s/\s+at \S+ line \d+\.?\s*$//r : scalar Text::CSV->error_diag;
+            push( @errors, { path => "$p/csv_options", message => "csv_options are not valid: $reason" } );
+        }
+
+        # Text::CSV accepts a multi character sep_char, which splits nothing. The usual
+        # mistake is '\t' in single quotes, which is a backslash and a t rather than a tab.
+        my $sep_char = $csv_options->{sep_char};
+        if ( defined $sep_char && !ref $sep_char && length $sep_char != 1 ) {
+            my $hint = $sep_char eq '\t' ? ', use double quotes ( "\t" ) for a tab' : q{};
+            push( @errors, { path => "$p/csv_options/sep_char", message => "sep_char must be a single character$hint" } );
+            $csv = undef;
+        }
+
+        my %in_header;
+        my $header = ref $job->{file} eq 'HASH' ? $job->{file}->{header} : undef;
+        if ( $csv && defined $header && length $header && !ref $header && $csv->parse($header) ) {
+            %in_header = map { $_ => 1 } $csv->fields;
+        }
+        my $not_in_header = sub {
+            my ($field) = @_;
+            return "'$field' is not in the configured header (header: " . join( ', ', sort keys %in_header ) . ")";
+        };
+
+        if ( %in_header && ref $job->{skip_incoming} eq 'HASH' ) {
+            foreach my $field ( sort keys %{ $job->{skip_incoming} } ) {
+                push( @errors, { path => "$p/skip_incoming/" . pointer_segment($field), message => $not_in_header->($field) } )
+                  unless $in_header{$field};
+            }
+        }
+
+        my $parameters = ref $job->{parameters} eq 'HASH' ? $job->{parameters} : {};
+        my $matchpoint = $parameters->{matchpoint};
+        if ( defined $matchpoint && !ref $matchpoint ) {
+            my $known =
+                 $matchpoint eq 'cardnumber'
+              || $matchpoint eq 'userid'
+              || ( $extended && Koha::Patron::Attribute::Types->find($matchpoint) );
+            push(
+                @errors,
+                {
+                    path    => "$p/parameters/matchpoint",
+                    message => "matchpoint '$matchpoint' must be cardnumber, userid or a patron attribute type code",
+                }
+            ) unless $known;
+        }
+        if ( ref $parameters->{preserve_fields} eq 'ARRAY' ) {
+            my @fields = @{ $parameters->{preserve_fields} };
+            foreach my $k ( 0 .. $#fields ) {
+                my $field = $fields[$k] // q{};
+                push( @errors, { path => "$p/parameters/preserve_fields/$k", message => _not_a_column($field) } )
+                  unless $valid_column{$field};
+            }
+        }
+        if ( ref $parameters->{defaults} eq 'HASH' ) {
+            foreach my $field ( sort keys %{ $parameters->{defaults} } ) {
+                push( @errors, { path => "$p/parameters/defaults/" . pointer_segment($field), message => _not_a_column($field) } )
+                  unless $valid_column{$field};
+            }
+        }
+
+        if ( ref $job->{delete_incoming} eq 'ARRAY' ) {
+            my @criteria = @{ $job->{delete_incoming} };
+            foreach my $k ( 0 .. $#criteria ) {
+                my $criterion = $criteria[$k];
+                next unless ref $criterion eq 'HASH' && defined $criterion->{field} && !ref $criterion->{field};
+                push( @errors, { path => "$p/delete_incoming/$k/field", message => _not_a_column( $criterion->{field} ) } )
+                  unless $valid_column{ $criterion->{field} };
+            }
+        }
+
+        my @columns = ref $job->{columns} eq 'ARRAY' ? @{ $job->{columns} } : ();
+        my %output_line;
+        foreach my $k ( 0 .. $#columns ) {
+            my $column = $columns[$k];
+            my $cp     = "$p/columns/$k";
+            unless ( ref $column eq 'HASH' ) {
+                push(
+                    @errors,
+                    { path => $cp, message => "Column must be a mapping with output and one of static, input, mapping or transformer" }
+                );
+                next;
+            }
+
+            # The import loop tries static, input, mapping then transformer, so the first one
+            # present is the one that runs
+            my @kinds = grep { exists $column->{$_} } qw(static input mapping transformer);
+            my $kind  = $kinds[0];
+            if ( @kinds != 1 ) {
+                my $found = @kinds ? "found: " . join( ', ', @kinds ) : "found none";
+                push( @errors, { path => $cp, message => "Column needs exactly one of static, input, mapping or transformer ($found)" } );
+            }
+
+            foreach my $key ( sort keys %$column ) {
+                push( @errors, { path => "$cp/" . pointer_segment($key), message => "Unknown key '$key' in column" } )
+                  unless $known_column_key{$key};
+            }
+
+            my $output = $column->{output};
+            if ( $kind && $kind ne 'transformer' ) {
+                if ( !defined $output || ref $output || !length $output ) {
+                    push( @errors, { path => $cp, message => "Column has no output" } );
+                    $output = undef;
+                }
+                else {
+                    push( @errors, { path => "$cp/output", message => _not_a_column($output) } ) unless $valid_column{$output};
+                    if ( exists $output_line{$output} ) {
+                        push(
+                            @errors,
+                            {
+                                path    => "$cp/output",
+                                message => "Output '$output' is also set by the column on line $output_line{$output}, only the last one is used",
+                            }
+                        );
+                    }
+                    else {
+                        $output_line{$output} = line_for_path( $outline, "$cp/output" ) // '?';
+                    }
+                }
+            }
+
+            if ( $kind && $kind ne 'input' && grep { exists $column->{$_} } qw(prefix padding length) ) {
+                push( @errors, { path => $cp, message => "prefix, padding and length only apply to input columns" } );
+            }
+            if ( defined $column->{length} && $column->{length} !~ /^\d+$/ ) {
+                push( @errors, { path => "$cp/length", message => "length must be a whole number" } );
+            }
+
+            if ( $kind && $kind eq 'input' && %in_header && !$in_header{ $column->{input} // q{} } ) {
+                push( @errors, { path => "$cp/input", message => $not_in_header->( $column->{input} // q{} ) } );
+            }
+            elsif ( $kind && $kind eq 'static' && defined $output ) {
+                $check_code->( $output, $column->{static}, "$cp/static" );
+            }
+            elsif ( $kind && $kind eq 'mapping' ) {
+                my $mapping = $column->{mapping};
+                if ( ref $mapping ne 'HASH' ) {
+                    push( @errors, { path => "$cp/mapping", message => "mapping needs a source column and a map of input values to output values" } );
+                }
+                else {
+                    my $source = $mapping->{source};
+                    if ( !defined $source || ref $source || !length $source ) {
+                        push( @errors, { path => "$cp/mapping", message => "mapping needs a source column" } );
+                    }
+                    elsif ( %in_header && !$in_header{$source} ) {
+                        push( @errors, { path => "$cp/mapping/source", message => $not_in_header->($source) } );
+                    }
+
+                    my $map = $mapping->{map};
+                    if ( ref $map ne 'HASH' || grep { ref } values %$map ) {
+                        push( @errors, { path => "$cp/mapping/map", message => "mapping needs a map of input values to output values" } );
+                    }
+                    elsif ( defined $output ) {
+                        $check_code->( $output, $map->{$_}, "$cp/mapping/map/" . pointer_segment($_) ) for sort keys %$map;
+                    }
+                }
+            }
+            elsif ( $kind && $kind eq 'transformer' ) {
+                $check_transformer->( $column->{transformer}, "$cp/transformer" );
+            }
+        }
+    }
+
+    foreach my $error (@errors) {
+        $error->{line} //= line_for_path( $outline, $error->{path} );
+        $error->{location} = _describe_path( $data, $error->{path} );
+    }
+    @errors = sort { ( $a->{line} // ~0 ) <=> ( $b->{line} // ~0 ) || $a->{path} cmp $b->{path} } @errors;
+
+    return { errors => \@errors, data => $data, valid_columns => [ sort keys %valid_column ] };
+}
+
+sub _not_a_column {
+    my ($field) = @_;
+
+    return "'$field' is not a column the patron import accepts";
+}
+
+# Turns JSON::Validator's errors into the same { path, message } shape as the other checks,
+# with wording a librarian can act on
+sub _schema_errors {
+    my (@validator_errors) = @_;
+
+    my %type_name = ( object => 'a mapping', array => 'a list', string => 'text', integer => 'a number', number => 'a number', null => 'nothing', boolean => 'true or false' );
+
+    my @errors;
+    foreach my $error (@validator_errors) {
+        my $path    = $error->path;
+        my $message = $error->message;
+
+        if ( $message =~ /^Properties not allowed: (.*)\.$/ ) {
+            push( @errors, { path => "$path/" . pointer_segment($_), message => "Unknown key '$_'" } ) for split( /, /, $1 );
+        }
+        elsif ( $message =~ /^Missing property\.$/ ) {
+            my ($key) = ( pointer_segments($path) )[-1];
+            push( @errors, { path => $path, message => "Missing required key '$key'" } );
+        }
+        elsif ( $message =~ /^Not in enum list: (.*)\.$/ ) {
+            push( @errors, { path => $path, message => "Must be one of $1" } );
+        }
+        elsif ( $message =~ /^Expected (\S+) - got (\S+)\.$/ ) {
+            my ( $expected, $got ) = ( $1, $2 );
+            $expected = join( ' or ', map { $type_name{$_} // $_ } split( /\//, $expected ) );
+            push( @errors, { path => $path, message => "Expected $expected, got " . ( $type_name{$got} // $got ) } );
+        }
+        else {
+            push( @errors, { path => $path, message => $message =~ s/\.$//r } );
+        }
+    }
+
+    return @errors;
+}
+
+# "job 12 "PUSD" > column 14 > transformer" reads better than "/11/columns/13/transformer"
+sub _describe_path {
+    my ( $data, $path ) = @_;
+
+    my @segments = pointer_segments($path);
+    return unless @segments && $segments[0] =~ /^\d+$/ && ref $data eq 'ARRAY';
+
+    my $index = shift @segments;
+    my $job   = $data->[$index];
+    my $name  = ref $job eq 'HASH' && defined $job->{name} && !ref $job->{name} ? qq{ "$job->{name}"} : q{};
+
+    my @parts = ( 'job ' . ( $index + 1 ) . $name );
+    if ( @segments >= 2 && $segments[0] eq 'columns' && $segments[1] =~ /^\d+$/ ) {
+        push( @parts, 'column ' . ( $segments[1] + 1 ) );
+        splice( @segments, 0, 2 );
+    }
+    push( @parts, join( '/', @segments ) ) if @segments;
+
+    return join( ' > ', @parts );
 }
 
 =head3 cronjob_nightly

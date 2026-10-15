@@ -1,0 +1,112 @@
+---
+# Shape of the plugin configuration: a list of import jobs. Only the structure is described
+# here, the checks that need Koha ( import columns, transformers, file transports, categories
+# and libraries ) live in validate_configuration. Jobs may carry extra keys because the
+# transformers receive the whole job, and the 0/1 flags are left untyped on purpose: YAML::XS
+# loads them as integers and 'true' as a number, so a boolean type would reject them.
+$schema: http://json-schema.org/draft-07/schema#
+definitions:
+  text:
+    type: [string, integer, number]
+type: array
+items:
+  type: object
+  required: [name, parameters, columns]
+  properties:
+    name:
+      $ref: '#/definitions/text'
+    columns:
+      type: array
+      items:
+        type: object
+    post_import_transformer:
+      type: string
+    run_on_dow:
+      $ref: '#/definitions/text'
+    csv_options:
+      type: object
+    file:
+      type: object
+      additionalProperties: false
+      properties:
+        header:
+          type: string
+    skip_incoming:
+      type: object
+      additionalProperties:
+        type: array
+    delete_incoming:
+      type: array
+      items:
+        type: object
+        required: [field, value, comparison]
+        additionalProperties: false
+        properties:
+          field:
+            type: string
+          value: {}
+          comparison:
+            enum: [equals, not_equals]
+    email_results:
+      type: object
+      required: [to]
+    local:
+      type: object
+      required: [directory, filename]
+      additionalProperties: false
+      properties:
+        directory:
+          $ref: '#/definitions/text'
+        filename:
+          $ref: '#/definitions/text'
+    file_transport:
+      type: object
+      required: [filename]
+      additionalProperties: false
+      properties:
+        id:
+          type: [integer, string]
+        name:
+          $ref: '#/definitions/text'
+        directory:
+          $ref: '#/definitions/text'
+        filename:
+          $ref: '#/definitions/text'
+    sftp:
+      type: object
+      required: [host, username, password, filename]
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+        port:
+          type: [integer, string]
+        username:
+          $ref: '#/definitions/text'
+        password:
+          $ref: '#/definitions/text'
+        directory:
+          $ref: '#/definitions/text'
+        filename:
+          $ref: '#/definitions/text'
+    parameters:
+      type: object
+      required: [matchpoint]
+      additionalProperties: false
+      properties:
+        matchpoint:
+          type: string
+        defaults:
+          type: object
+        preserve_fields:
+          type: array
+          items:
+            type: string
+        preserve_extended_attributes: {}
+        overwrite_cardnumber: {}
+        overwrite_passwords: {}
+        dry_run: {}
+        send_welcome: {}
+        update_dateexpiry: {}
+        update_dateexpiry_from_today: {}
+        update_dateexpiry_from_existing: {}
