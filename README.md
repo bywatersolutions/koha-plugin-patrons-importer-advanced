@@ -78,8 +78,7 @@ It can support unlimited files with different configurations and allows for rena
       - "9"
       - "71"
       - "106"
-  skip_incoming: # If the incoming file row has a column with this name and a matching value, that row will not be imported as a patron:
-  send_email: # Optional, email results
+  email_results: # Optional, email results
     subject: Your library's import results
     from: me@example.com
     to: you@example.com
@@ -137,6 +136,10 @@ The transformers are stored within the `config` block of the Koha configuration 
     </transformers>
  </patrons_importer_advanced>
  ```
+
+## Configuration checks
+
+Saving the configuration checks it first. The YAML has to parse; every job needs a `name`, `parameters` with a `matchpoint`, `columns` and a `local`, `file_transport` or `sftp` block; every `output` has to be a column the patron import accepts; every `transformer` and `post_import_transformer` has to be defined in koha-conf.xml; a `file_transport` has to exist; static and mapped `categorycode` and `branchcode` values have to exist; and when `file.header` is set, the `input`, `mapping.source` and `skip_incoming` column names have to be in it. Unknown keys under `parameters` or in a column, a key repeated in the same block, a multi character `sep_char` and a few other mistakes are reported too. Each problem is listed with its line number and the configuration is not stored until they are fixed, or until "Save anyway" is ticked. Extra keys on a job are allowed because the transformers receive the whole job. The nightly run lists the same problems at the top of its output before importing.
 
 ## Raw config ( copy and paste as a starter template )
 ```yaml
@@ -213,7 +216,7 @@ The transformers are stored within the `config` block of the Koha configuration 
       - "9"
       - "71"
       - "106"
-  send_email:
+  email_results:
     subject: Your library's import results
     from: me@example.com
     to: you@example.com
