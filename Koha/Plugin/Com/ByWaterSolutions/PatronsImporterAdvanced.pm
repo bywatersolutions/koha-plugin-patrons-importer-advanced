@@ -681,11 +681,13 @@ Returns the transformer subroutines defined in koha-conf.xml, keyed by name. Die
 sub get_transformers {
     my ($self) = @_;
 
-    # Load transformation subroutines from kaho-conf.xml
+    # Load transformation subroutines from kaho-conf.xml. KeyAttr is empty so XML::Simple
+    # doesn't fold the rest of the file on name attributes and warn about the duplicates
     my $conf_file = Koha::Config->guess_koha_conf;
     my $xml       = XMLin(
         $conf_file,
         ForceArray    => 0,
+        KeyAttr       => [],
         SuppressEmpty => undef,
     );
 
