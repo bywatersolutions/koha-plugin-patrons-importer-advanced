@@ -630,6 +630,37 @@ sub get_configuration {
     return $data;
 }
 
+=head3 get_transformers
+
+    my $transformers = $plugin->get_transformers();
+
+Returns the transformer subroutines defined in koha-conf.xml, keyed by name. Dies if one of them doesn't compile.
+
+=cut
+
+sub get_transformers {
+    my ($self) = @_;
+
+    # Load transformation subroutines from kaho-conf.xml
+    my $conf_file = Koha::Config->guess_koha_conf;
+    my $xml       = XMLin(
+        $conf_file,
+        ForceArray    => 0,
+        SuppressEmpty => undef,
+    );
+
+    my $koha_conf_data = $xml->{config}->{patrons_importer_advanced};
+    my $transformers   = $koha_conf_data->{transformers} || {};
+    foreach my $sub_name ( keys %$transformers ) {
+        my $code   = $transformers->{$sub_name};
+        my $subref = eval $code;
+        die "ERROR IN $sub_name: $@" if $@;
+        $transformers->{$sub_name} = $subref;
+    }
+
+    return $transformers;
+}
+
 =head3 cronjob_nightly
 
 =cut
@@ -641,24 +672,7 @@ sub cronjob_nightly {
 
     my $Import = Koha::Patrons::Import->new();
 
-    # Load transformation subroutines from kaho-conf.xml
-    my $conf_file = Koha::Config->guess_koha_conf;
-    my $xml       = XMLin(
-        $conf_file,
-        ForceArray    => 0,
-        SuppressEmpty => undef,
-    );
-
-    my $koha_conf_data = $xml->{config}->{patrons_importer_advanced};
-    my $transformers   = $koha_conf_data->{transformers};
-    if ($transformers) {
-        foreach my $sub_name ( keys %$transformers ) {
-            my $code   = $transformers->{$sub_name};
-            my $subref = eval $code;
-            die "ERROR IN $sub_name: $@" if $@;
-            $transformers->{$sub_name} = $subref;
-        }
-    }
+    my $transformers = $self->get_transformers();
 
     foreach my $job (@$data) {
         try {
