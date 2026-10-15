@@ -205,15 +205,15 @@ sub get_sftp {
     return $sftp;
 }
 
-=head3 get_file_transport
+=head3 find_file_transport
 
-Returns the Koha::File::Transport referenced by a job's 'file_transport' block,
-connected and positioned in the job's directory. Dies if the transport can't be
-found or connected to, or if the directory can't be changed to.
+    my $transport = $plugin->find_file_transport($job);
+
+Returns the Koha::File::Transport referenced by a job's 'file_transport' block without connecting to it. Dies if the block has no filename, or names no transport or more than one.
 
 =cut
 
-sub get_file_transport {
+sub find_file_transport {
     my ( $self, $job ) = @_;
     my $conf = $job->{file_transport};
 
@@ -238,6 +238,23 @@ sub get_file_transport {
     else {
         die "Patrons Importer - FILE TRANSPORT ERROR: file_transport requires an id or a name";
     }
+
+    return $transport;
+}
+
+=head3 get_file_transport
+
+Returns the Koha::File::Transport referenced by a job's 'file_transport' block,
+connected and positioned in the job's directory. Dies if the transport can't be
+found or connected to, or if the directory can't be changed to.
+
+=cut
+
+sub get_file_transport {
+    my ( $self, $job ) = @_;
+    my $conf = $job->{file_transport};
+
+    my $transport = $self->find_file_transport($job);
 
     _file_transport_op( $transport, 'connect', sub { $transport->connect } );
 
